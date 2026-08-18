@@ -95,6 +95,11 @@ _BATTERY = re.compile(r"(?i)\b(\d{1,2})\s*(?:\+\s*)?(?:hour|hours|hrs?)\b[^.\n]{
 _UPPERCASE_BRANDS = frozenset({"hp", "asus", "msi", "lg", "acer"})
 
 
+def _both(*values: object) -> bool:
+    """True only when every value is known."""
+    return all(value is not None for value in values)
+
+
 def _brand_display(brand: str) -> str:
     return brand.upper() if brand.lower() in _UPPERCASE_BRANDS else brand.title()
 
@@ -380,17 +385,48 @@ class OfflineReasoner:
         price-claim screening unchanged.
         """
         specs = winner.product.specs
-        sentences = [
-            f"The {winner.product.title.split(',')[0].strip()} matches what you asked for: "
-            f"{specs.ram_gb}GB RAM, {specs.storage_gb}GB {specs.storage_type.upper()}, "
-            f"a {specs.screen_inches}-inch display and {specs.cpu}."
-        ]
+        name = winner.product.title.split(",")[0].strip()
+
+        # Only specifications the marketplace actually reported are described.
+        # A missing value is left unmentioned, never filled in.
+        stated: list[str] = []
+        if specs.ram_gb is not None:
+            stated.append(f"{specs.ram_gb}GB RAM")
+        if specs.storage_gb is not None:
+            unit = f"{specs.storage_gb}GB"
+            stated.append(
+                f"{unit} {specs.storage_type.upper()}" if specs.storage_type else unit
+            )
+        if specs.screen_inches is not None:
+            stated.append(f"a {specs.screen_inches}-inch display")
+        if specs.cpu:
+            stated.append(specs.cpu)
+
+        if stated:
+            sentences = [f"The {name} matches what you asked for: {', '.join(stated)}."]
+        else:
+            sentences = [
+                f"The {name} ranked highest against your requirements on price and "
+                "marketplace rating."
+            ]
+
         if requirements.budget_max is not None:
             sentences.append("It stays within your budget after applicable discounts.")
         if requirements.dedicated_gpu_required and specs.dedicated_gpu:
-            sentences.append(f"It includes the dedicated {specs.gpu} you require.")
-        if requirements.min_battery_hours and specs.battery_hours >= requirements.min_battery_hours:
+            gpu = specs.gpu or "dedicated graphics"
+            sentences.append(f"It includes the {gpu} you require.")
+        if (
+            requirements.min_battery_hours
+            and specs.battery_hours is not None
+            and specs.battery_hours >= requirements.min_battery_hours
+        ):
             sentences.append(f"Rated battery life is around {specs.battery_hours} hours.")
+        unknown = {"ram_gb", "storage_gb", "screen_inches", "weight_kg", "battery_hours"} - specs.known_fields()
+        if unknown:
+            sentences.append(
+                "Some specifications were not listed by the marketplace, so they are "
+                "shown as not stated rather than estimated."
+            )
         if winner.price.unmet_conditional_offers:
             sentences.append(
                 "Additional conditional offers are listed that you would need to qualify for."
@@ -414,20 +450,28 @@ class OfflineReasoner:
         for other in runner_ups[:3]:
             other_specs = other.product.specs
             brand = _brand_display(other.product.brand)
-            if other_specs.ram_gb > specs.ram_gb:
+            # Each comparison needs both values known; an unknown is not a
+            # difference worth asserting.
+            if _both(other_specs.ram_gb, specs.ram_gb) and other_specs.ram_gb > specs.ram_gb:
                 add(
                     "memory",
                     f"{brand} offers more RAM ({other_specs.ram_gb}GB) "
                     "but ranked lower overall.",
                 )
-            if other_specs.weight_kg < specs.weight_kg - 0.3:
+            if (
+                _both(other_specs.weight_kg, specs.weight_kg)
+                and other_specs.weight_kg < specs.weight_kg - 0.3
+            ):
                 add(
                     "portability",
                     f"The {brand} option is lighter at {other_specs.weight_kg}kg.",
                 )
             if other_specs.dedicated_gpu and not specs.dedicated_gpu:
                 add("graphics", f"The {brand} option adds dedicated graphics.")
-            if other_specs.battery_hours > specs.battery_hours + 2:
+            if (
+                _both(other_specs.battery_hours, specs.battery_hours)
+                and other_specs.battery_hours > specs.battery_hours + 2
+            ):
                 add(
                     "battery life",
                     f"The {brand} option is rated for longer battery life "

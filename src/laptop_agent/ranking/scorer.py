@@ -105,6 +105,22 @@ def _ratio(value: Decimal, ceiling: Decimal) -> Decimal:
     return _clamp(value / ceiling) if ceiling > 0 else _ZERO
 
 
+def _dec(value: float | int | None) -> Decimal | None:
+    """Decimal, or ``None`` when the specification is unknown."""
+    return None if value is None else Decimal(str(value))
+
+
+def _credit(value: float | int | None, ceiling: Decimal) -> Decimal:
+    """Normalised credit for a spec, or zero when it is unknown.
+
+    Unknown earns no credit rather than an average. A listing that does not
+    report a specification must not outrank one that does and reports it poorly —
+    that would reward incomplete data.
+    """
+    number = _dec(value)
+    return _ZERO if number is None else _ratio(number, ceiling)
+
+
 def score_candidate(
     candidate: ProductCandidate, requirements: LaptopRequirements
 ) -> ProductScore:
@@ -190,20 +206,34 @@ def _requirement_fit(
     specs = candidate.product.specs
     checks: list[bool] = []
 
+    # An unknown specification counts as unsatisfied: it is not evidence of fit.
     if requirements.min_ram_gb is not None:
-        checks.append(specs.ram_gb >= requirements.min_ram_gb)
+        checks.append(specs.ram_gb is not None and specs.ram_gb >= requirements.min_ram_gb)
     if requirements.min_storage_gb is not None:
-        checks.append(specs.storage_gb >= requirements.min_storage_gb)
+        checks.append(
+            specs.storage_gb is not None and specs.storage_gb >= requirements.min_storage_gb
+        )
     if requirements.storage_type != "any":
         checks.append(specs.storage_type == requirements.storage_type)
     if requirements.min_screen_inches is not None:
-        checks.append(specs.screen_inches >= requirements.min_screen_inches)
+        checks.append(
+            specs.screen_inches is not None
+            and specs.screen_inches >= requirements.min_screen_inches
+        )
     if requirements.max_screen_inches is not None:
-        checks.append(specs.screen_inches <= requirements.max_screen_inches)
+        checks.append(
+            specs.screen_inches is not None
+            and specs.screen_inches <= requirements.max_screen_inches
+        )
     if requirements.max_weight_kg is not None:
-        checks.append(specs.weight_kg <= requirements.max_weight_kg)
+        checks.append(
+            specs.weight_kg is not None and specs.weight_kg <= requirements.max_weight_kg
+        )
     if requirements.min_battery_hours is not None:
-        checks.append(specs.battery_hours >= requirements.min_battery_hours)
+        checks.append(
+            specs.battery_hours is not None
+            and specs.battery_hours >= requirements.min_battery_hours
+        )
     if requirements.required_os != "any":
         checks.append(specs.os == requirements.required_os)
     if requirements.dedicated_gpu_required:
@@ -242,12 +272,16 @@ def _value_for_money(
     gpu_counts = (
         requirements.use_case in _GPU_RELEVANT or requirements.dedicated_gpu_required
     )
+    # Unknown specs contribute nothing, so an under-described listing cannot
+    # score as though it were well equipped.
     capability = (
-        Decimal(specs.ram_gb) * Decimal("1.5")
-        + Decimal(specs.storage_gb) / Decimal("32")
+        (_dec(specs.ram_gb) or _ZERO) * Decimal("1.5")
+        + (_dec(specs.storage_gb) or _ZERO) / Decimal("32")
         + (Decimal("24") if specs.dedicated_gpu and gpu_counts else _ZERO)
-        + Decimal(str(specs.battery_hours))
+        + (_dec(specs.battery_hours) or _ZERO)
     )
+    if capability <= 0:
+        return _ZERO
     # Normalised against a reference of one capability point per INR 1,200.
     return _ratio(capability * Decimal("1200") / effective, Decimal("1.6"))
 
@@ -278,15 +312,16 @@ def _spec_strength(
 ) -> Decimal:
     """Absolute specification strength, weighted for the stated use case."""
     specs = candidate.product.specs
+    weight = _dec(specs.weight_kg)
     attributes = {
-        "ram": _ratio(Decimal(specs.ram_gb), _RAM_CEILING),
-        "storage": _ratio(Decimal(specs.storage_gb), _STORAGE_CEILING),
-        "battery": _ratio(Decimal(str(specs.battery_hours)), _BATTERY_CEILING),
-        "portability": _clamp(
-            (Decimal("2.5") - Decimal(str(specs.weight_kg))) / Decimal("1.2")
-        ),
+        "ram": _credit(specs.ram_gb, _RAM_CEILING),
+        "storage": _credit(specs.storage_gb, _STORAGE_CEILING),
+        "battery": _credit(specs.battery_hours, _BATTERY_CEILING),
+        "portability": _ZERO
+        if weight is None
+        else _clamp((Decimal("2.5") - weight) / Decimal("1.2")),
         "gpu": _ONE if specs.dedicated_gpu else Decimal("0.2"),
-        "refresh": _ratio(Decimal(specs.refresh_rate_hz), Decimal("165")),
+        "refresh": _credit(specs.refresh_rate_hz, Decimal("165")),
     }
     profile = _SPEC_PROFILE[requirements.use_case]
     total = sum(
@@ -296,10 +331,16 @@ def _spec_strength(
 
 
 def _rating_confidence(candidate: ProductCandidate) -> Decimal:
-    """Rating, discounted when it rests on very few reviews."""
+    """Rating, discounted when it rests on very few reviews.
+
+    An unrated listing scores near zero rather than mid-range. On a live
+    marketplace, no rating usually means a new or grey-market seller, and
+    treating that as merely "average" let unrated no-name listings outrank
+    well-reviewed ones purely on price.
+    """
     rating = candidate.product.rating
     if rating is None:
-        return Decimal("0.3")
+        return Decimal("0.1")
     normalised = _ratio(Decimal(str(rating)), Decimal("5"))
     # Full confidence at 500+ ratings; scaled below that.
     confidence = _ratio(Decimal(candidate.product.rating_count), Decimal("500"))

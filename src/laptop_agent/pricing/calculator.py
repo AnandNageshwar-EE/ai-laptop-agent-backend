@@ -29,6 +29,8 @@ class CandidateBuildReport(BaseModel):
     #: (product key, reason) for products excluded before ranking.
     rejected: list[tuple[str, str]] = Field(default_factory=list)
     price_errors: list[tuple[str, str]] = Field(default_factory=list)
+    #: Listings disqualified because their seller text attempted manipulation.
+    trust_flagged: list[str] = Field(default_factory=list)
 
 
 class PriceCalculator:
@@ -43,8 +45,10 @@ class PriceCalculator:
         offers: list[Offer],
         requirements: LaptopRequirements,
         profile: PurchaseProfile,
+        flagged_product_ids: set[str] | None = None,
     ) -> tuple[list[ProductCandidate], CandidateBuildReport]:
         report = CandidateBuildReport()
+        flagged = flagged_product_ids or set()
         offers_by_product = self._index_offers(offers)
         candidates: list[ProductCandidate] = []
 
@@ -69,6 +73,9 @@ class PriceCalculator:
                 continue
 
             failed = evaluate_hard_constraints(product, requirements, price)
+            is_flagged = product.product_id in flagged
+            if is_flagged:
+                report.trust_flagged.append(key)
             candidates.append(
                 ProductCandidate(
                     product=product,
@@ -76,6 +83,7 @@ class PriceCalculator:
                     price=price,
                     hard_requirements_passed=not failed,
                     failed_constraints=failed,
+                    trust_flagged=is_flagged,
                 )
             )
             report.built += 1

@@ -82,3 +82,81 @@ def test_structured_payloads_serialise_deterministically():
     assert wrap_untrusted(payload, TrustLabel.TOOL_DATA) == wrap_untrusted(
         payload, TrustLabel.TOOL_DATA
     )
+
+
+# ---------------------------------------------------------------------------
+# Regression: a flagged listing must never win, even when it would on merit.
+#
+# The original test only passed because its query demanded 16GB RAM, which
+# excluded the 8GB poisoned fixture incidentally. With no RAM constraint the
+# fixture is eligible and cheapest, and it was being recommended — the injection
+# achieved its goal (promotion) without the model ever obeying it.
+# ---------------------------------------------------------------------------
+
+
+def test_flagged_listing_is_never_recommended_even_when_cheapest():
+    from laptop_agent.agent import LaptopAgent
+    from laptop_agent.config import Settings
+
+    agent = LaptopAgent(settings=Settings(llm_mode="offline", langsmith_tracing=False))
+    # No RAM floor, and a budget where both the poisoned 8GB fixture (INR 31,990)
+    # and a legitimate option fit. Without the trust gate the poisoned listing
+    # scores higher (cheaper, more budget headroom) and wins.
+    reply = agent.run(message="cheap laptop for office work under 60000")
+
+    assert reply.recommendation is not None, "expected some recommendation"
+    assert reply.recommendation.product_id != "FK-INJECT-01"
+    assert "IGNORE" not in reply.recommendation.title.upper()
+    # The exclusion is disclosed rather than silent.
+    assert "flipkart:FK-INJECT-01" in reply.diagnostics["trust_excluded_listings"]
+
+
+def test_flagged_listing_is_not_offered_as_a_runner_up():
+    from laptop_agent.agent import LaptopAgent
+    from laptop_agent.config import Settings
+
+    agent = LaptopAgent(settings=Settings(llm_mode="offline", langsmith_tracing=False))
+    reply = agent.run(message="cheap laptop for office work under 60000")
+    assert reply.recommendation is not None
+    ids = {runner.product_id for runner in reply.recommendation.runner_ups}
+    assert "FK-INJECT-01" not in ids
+
+
+def test_validator_rejects_a_flagged_candidate_directly():
+    """Defence in depth: even handed a flagged candidate, the validator refuses."""
+    from laptop_agent.guardrails.recommendation_validator import ValidationFailure
+    from laptop_agent.domain.product import ProductCandidate
+
+    candidate_fields = {"trust_flagged"}
+    assert candidate_fields <= set(ProductCandidate.model_fields)
+    assert ValidationFailure.SELLER_CONTENT_FLAGGED
+
+
+def test_injection_payload_is_neutralised_before_display():
+    from laptop_agent.guardrails.display import neutralise_for_display
+
+    hostile = _injected_product()
+    clean_title, modified = neutralise_for_display(hostile["title"])
+    assert modified
+    assert "IGNORE PREVIOUS INSTRUCTIONS" not in clean_title
+    # The legitimate part still identifies the product.
+    assert "Budget Laptop 15" in clean_title
+
+    clean_desc, modified = neutralise_for_display(hostile["description"])
+    assert modified
+    assert "ignore all previous instructions" not in clean_desc.lower()
+
+
+def test_legitimate_titles_are_untouched_by_display_neutralisation():
+    from laptop_agent.guardrails.display import neutralise_for_display
+
+    for title in (
+        "Lenovo IdeaPad Slim 5 14 inch, Ryzen 7 8845HS, 16GB, 512GB SSD",
+        "HP Victus 15, i5-12450H, 16GB, 512GB SSD, RTX 3050",
+        "Apple MacBook Air 13 inch M3, 16GB, 512GB SSD",
+        "ASUS Vivobook 16, Ryzen 7 7730U, 16GB, 512GB SSD",
+        "Dell G16 7630 Gaming Laptop, i7-13650HX, 32GB, 1TB SSD, RTX 4060",
+    ):
+        clean, modified = neutralise_for_display(title)
+        assert not modified, f"false positive on: {title}"
+        assert clean == title

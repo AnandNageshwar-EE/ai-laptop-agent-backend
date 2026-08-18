@@ -15,6 +15,9 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 LLMProvider = Literal["anthropic", "bedrock"]
 LLMMode = Literal["live", "offline"]
+#: Where marketplace listings come from. ``fixtures`` needs no credentials and
+#: runs offline; ``serpapi`` fetches live listings and real prices.
+MarketplaceSource = Literal["fixtures", "serpapi"]
 
 # Volatile data must never be cached for long. Section 6 of the NFR spec.
 MAX_VOLATILE_CACHE_TTL_SECONDS = 300
@@ -56,6 +59,12 @@ class Settings(BaseSettings):
 
     anthropic_api_key: SecretStr | None = None
     aws_region: str = "us-east-1"
+
+    # ----- marketplace data source -----
+    marketplace_source: MarketplaceSource = "fixtures"
+    serpapi_key: SecretStr | None = None
+    serpapi_timeout_seconds: float = 20.0
+    serpapi_country: str = "in"
 
     # ----- prompt caching -----
     prompt_caching_enabled: bool = True
@@ -100,6 +109,16 @@ class Settings(BaseSettings):
         return value
 
     @property
+    def live_marketplace_enabled(self) -> bool:
+        """True only when a live source is selected *and* usable."""
+        return self.marketplace_source == "serpapi" and self.serpapi_key is not None
+
+    @property
+    def effective_marketplace_source(self) -> str:
+        """What will actually be used, after falling back on a missing key."""
+        return "serpapi" if self.live_marketplace_enabled else "fixtures"
+
+    @property
     def tracing_enabled(self) -> bool:
         return bool(self.langsmith_tracing and self.langsmith_api_key)
 
@@ -115,6 +134,7 @@ class Settings(BaseSettings):
             "graph_version": self.graph_version,
             "model": self.traced_model_name,
             "llm_provider": self.llm_provider,
+            "marketplace_source": self.effective_marketplace_source,
         }
 
     def base_trace_tags(self) -> list[str]:

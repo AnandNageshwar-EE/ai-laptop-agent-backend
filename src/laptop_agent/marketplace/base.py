@@ -42,6 +42,19 @@ class MarketplaceClient(Protocol):
         ...
 
 
+@runtime_checkable
+class ProductTransport(Protocol):
+    """Source of raw listing payloads for a client.
+
+    Lets the same client serve fixtures or a live API without any consumer
+    knowing which, because both return the identical untrusted envelope.
+    """
+
+    def fetch_products(
+        self, marketplace: Marketplace, request: SearchProductsRequest
+    ) -> dict[str, Any]: ...
+
+
 class MarketplaceError(RuntimeError):
     """A provider failed. Carries the marketplace so one provider's outage can be
     reported without failing the whole search."""

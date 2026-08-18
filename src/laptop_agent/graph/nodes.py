@@ -458,8 +458,15 @@ class AgentNodes:
                 return {"candidates": []}
 
             profile = state.get("purchase_profile") or PurchaseProfile()
+            # Listings whose seller text attempted to manipulate the agent are
+            # kept as candidates but disqualified from being recommended.
+            flagged = {product_id for product_id, _ in state.get("injection_flags", [])}
             candidates, report = self.calculator.build_candidates(
-                state.get("products", []), state.get("offers", []), requirements, profile
+                state.get("products", []),
+                state.get("offers", []),
+                requirements,
+                profile,
+                flagged_product_ids=flagged,
             )
 
             for key, errors in report.price_errors:
@@ -473,8 +480,22 @@ class AgentNodes:
                     )
                 )
 
+            for key in report.trust_flagged:
+                self.audit.record(
+                    AuditRecord(
+                        event=AuditEvent.RECOMMENDATION_REJECTED,
+                        session_id=session_id,
+                        node="pricing_calculation",
+                        reason="seller_content_flagged",
+                        detail={"candidate": key, "action": "disqualified_from_recommendation"},
+                    )
+                )
+
             self.metrics.candidates_built = report.built
-            return {"candidates": candidates}
+            return {
+                "candidates": candidates,
+                "trust_excluded": report.trust_flagged,
+            }
 
         return _timed("pricing_calculation", self.metrics, run)
 
@@ -521,8 +542,9 @@ class AgentNodes:
             winner = by_key.get(ranked[0].key)
             if winner is None:
                 return {"recommendation": None}
+            # Up to five results total, so the UI can list them as ranked cards.
             runner_ups = [
-                by_key[score.key] for score in ranked[1:4] if score.key in by_key
+                by_key[score.key] for score in ranked[1:6] if score.key in by_key
             ]
 
             try:
@@ -585,14 +607,22 @@ class AgentNodes:
                     product_id=candidate.product.product_id,
                     marketplace=candidate.product.marketplace,
                     title=candidate.product.title,
+                    brand=candidate.product.brand,
                     url=candidate.product.url,
+                    rating=candidate.product.rating,
+                    rating_count=candidate.product.rating_count,
+                    listed_price=candidate.price.listed_price,
                     effective_price=candidate.price.effective_price,
+                    upfront_savings=candidate.price.total_upfront_discount,
+                    cashback_value=candidate.price.cashback_value,
+                    unmet_conditional_offers=candidate.price.unmet_conditional_offers,
+                    specs=candidate.product.specs,
                     score=score.total,
                     why_not=screen_price_claims(
                         notes.get(candidate.product.product_id, ""), allowed
                     ).text[:280],
                 )
-                for candidate, score in zip(runner_ups, ranked[1:4])
+                for candidate, score in zip(runner_ups, ranked[1:6])
             ]
 
             # Every price field is copied from the validated breakdown. The model
@@ -601,12 +631,17 @@ class AgentNodes:
                 product_id=winner.product.product_id,
                 marketplace=winner.product.marketplace,
                 title=winner.product.title,
+                brand=winner.product.brand,
                 url=winner.product.url,
+                rating=winner.product.rating,
+                rating_count=winner.product.rating_count,
+                specs=winner.product.specs,
                 listed_price=winner.price.listed_price,
                 effective_price=winner.price.effective_price,
                 upfront_savings=winner.price.total_upfront_discount,
                 cashback_value=winner.price.cashback_value,
                 unmet_conditional_offers=winner.price.unmet_conditional_offers,
+                applied_offers=winner.price.applied_offers,
                 score=ranked[0].total,
                 scoring_version=ranked[0].scoring_version,
                 rationale=rationale_report.text or "This option matches your stated requirements.",
@@ -844,8 +879,9 @@ def _render_recommendation(
     if flags:
         lines += [
             "",
-            f"Note: {len(flags)} listing(s) contained text attempting to influence "
-            "this recommendation. It was ignored and treated as product data.",
+            f"Note: {len(flags)} listing(s) contained seller text attempting to "
+            "influence this recommendation. Those listings were disqualified from "
+            "being recommended, and their text was never treated as an instruction.",
         ]
     lines += ["", f"Link: {recommendation.url}"]
     return "\n".join(lines)

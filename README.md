@@ -108,10 +108,51 @@ src/laptop_agent/
 
 ## Marketplace data
 
-Amazon and Flipkart are simulated from `marketplace/fixtures.py` so the pipeline
-runs without credentials. Going live means replacing two methods
-(`_fetch_products`, `_fetch_offers`) with HTTP calls — nothing downstream changes,
-because everything downstream already treats the response as untrusted.
+Two sources, selected by `MARKETPLACE_SOURCE`. Both return the same untrusted
+envelope, so guardrails, pricing, ranking and validation are identical either way.
+
+### `serpapi` — live listings, real prices, real product pages
+
+```bash
+MARKETPLACE_SOURCE=serpapi
+SERPAPI_KEY=...            # serpapi.com, free tier = 250 searches/month
+```
+
+| Marketplace | Engine | Result |
+|---|---|---|
+| Amazon.in | `amazon` | Real ASINs, real prices, canonical `/dp/<ASIN>` URLs |
+| Flipkart | `google` + `site:flipkart.com` | Real `/<slug>/p/itm…` URLs, price parsed from the snippet |
+
+Three findings from building this, since the obvious approaches do not work:
+
+- **`google_shopping` is a dead end for Flipkart.** It returns Flipkart rows with
+  correct prices, but the only link is a Google catalog page — there is no
+  `flipkart.com` URL for the provenance check to verify, so the rows are unusable.
+  Organic search with a `site:` filter gives real product URLs instead.
+- **Amazon result links are not product links.** They carry the search session
+  (`/ref=sr_1_17?dib=…`), and sponsored rows are `/sspa/click` ad redirects. Both
+  pass a host check while pointing at a tracker, so URLs are rebuilt from the ASIN.
+- **Search APIs return no offer structures.** With a live source there are simply
+  no offers rather than invented ones, so the effective price equals the real
+  listed price. A discount that cannot be verified must never be applied.
+
+Coverage is honestly asymmetric: Amazon has a dedicated engine, Flipkart does not,
+so Amazon returns more results. Flipkart rows whose price cannot be parsed are
+dropped, because a listing with no establishable price is useless to an agent
+whose job is comparing what you would pay.
+
+Specs are not returned by any search API, so `marketplace/spec_parser.py` extracts
+them from listing titles by regex (`"(16GB/512GB SSD/Windows 11)"`). Anything it
+cannot extract stays `None`, which the constraint logic treats as **unknown and
+therefore failing** any mandatory requirement — claiming a laptop is under 1.5 kg
+when no weight was reported would invent a fact the user is relying on.
+
+### `fixtures` — simulated, offline, the default
+
+No credentials, no network, deterministic. Prices are invented and will not match
+the real marketplace; the UI says so. Going fully live means only swapping the
+transport — nothing downstream changes, because everything downstream already
+treats the response as untrusted.
 
 The fixtures deliberately include hostile and malformed records, so the guardrails
 are exercised by the default demo rather than only by tests:
@@ -164,3 +205,9 @@ directory. Comment it out to run the backend alone.
 
 No API key, no network, no mocking framework — offline mode is a real code path,
 not a test fixture.
+
+`tests/conftest.py` force-isolates every test onto `MARKETPLACE_SOURCE=fixtures`
+with credentials cleared. Without that, a developer whose `.env` selects a live
+source makes the suite slow, non-deterministic and quietly expensive —
+`test_serpapi_transport.py` has explicit guards that fail if this regresses,
+including one that treats any outbound HTTP call during a run as a failure.

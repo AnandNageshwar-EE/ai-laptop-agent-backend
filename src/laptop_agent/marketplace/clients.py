@@ -17,7 +17,7 @@ from typing import Any
 from ..cache.base import CacheProvider
 from ..domain.enums import Marketplace
 from ..guardrails.tool_input import FetchOffersRequest, SearchProductsRequest
-from .base import CachingClientMixin
+from .base import CachingClientMixin, ProductTransport
 from .fixtures import (
     AMAZON_OFFERS,
     AMAZON_PRODUCTS,
@@ -41,8 +41,12 @@ class _FixtureBackedClient(CachingClientMixin):
         cache: CacheProvider | None = None,
         product_ttl_seconds: int = 300,
         offer_ttl_seconds: int = 120,
+        transport: ProductTransport | None = None,
     ) -> None:
         self.marketplace = self._marketplace
+        #: When set, listings come from a live source instead of the fixtures.
+        #: Offers still come from fixtures — see ``_fetch_offers``.
+        self._transport = transport
         super().__init__(
             cache=cache,
             product_ttl_seconds=product_ttl_seconds,
@@ -88,6 +92,8 @@ class _FixtureBackedClient(CachingClientMixin):
     # ----- replace these two methods with real HTTP calls -----
 
     def _fetch_products(self, request: SearchProductsRequest) -> dict[str, Any]:
+        if self._transport is not None:
+            return self._transport.fetch_products(self._marketplace, request)
         matched = filter_products(
             self._products, query=request.query, max_results=request.max_results
         )
@@ -98,6 +104,19 @@ class _FixtureBackedClient(CachingClientMixin):
         }
 
     def _fetch_offers(self, request: FetchOffersRequest) -> dict[str, Any]:
+        """Offers.
+
+        Live search APIs do not expose bank/exchange/cashback offer structures,
+        so with a live transport there are simply no offers rather than invented
+        ones. The effective price then equals the real listed price, which is
+        correct: a discount we cannot verify must never be applied.
+        """
+        if self._transport is not None:
+            return {
+                "marketplace": self._marketplace.value,
+                "source": "live",
+                "offers": [],
+            }
         wanted = set(request.product_ids)
         return {
             "marketplace": self._marketplace.value,

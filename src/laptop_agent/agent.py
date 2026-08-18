@@ -205,6 +205,7 @@ class LaptopAgent:
             "conversation_stage": stage.value,
             "prompt_versions": self.prompts.versions(PromptTask.RECOMMENDATION),
             "prompt_assembly_cache": self.prompts.assembly_stats(),
+            "trust_excluded_listings": list(final.get("trust_excluded", [])),
             "quarantined_products": [key for key, _ in final.get("quarantined_products", [])],
             "quarantined_offers": [key for key, _ in final.get("quarantined_offers", [])],
         }

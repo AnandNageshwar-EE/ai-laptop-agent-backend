@@ -11,16 +11,43 @@ import pytest
 
 from laptop_agent.audit import CollectingAuditSink
 from laptop_agent.cache import InMemoryCacheProvider
-from laptop_agent.config import Settings
+from laptop_agent.config import Settings, reset_settings_cache
 from laptop_agent.domain import Bank, Currency, LaptopRequirements, Money, PurchaseProfile, UseCase
 from laptop_agent.marketplace.registry import build_registry
 from laptop_agent.session import InMemorySessionStore
+
+
+#: Environment that must not leak into tests from a developer's local .env.
+#: Without this, a machine configured with MARKETPLACE_SOURCE=serpapi makes the
+#: suite hit a live API — slow, non-deterministic, and it spends real credits.
+_ISOLATED_ENV = {
+    "MARKETPLACE_SOURCE": "fixtures",
+    "SERPAPI_KEY": "",
+    "LLM_MODE": "offline",
+    "ANTHROPIC_API_KEY": "",
+    "LANGSMITH_TRACING": "false",
+    "LANGSMITH_API_KEY": "",
+    "ENVIRONMENT": "test",
+}
+
+
+@pytest.fixture(autouse=True)
+def isolate_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Force every test onto offline, fixture-backed, untraced configuration."""
+    for name, value in _ISOLATED_ENV.items():
+        monkeypatch.setenv(name, value)
+    # Settings are memoised, so the cache must be dropped either side.
+    reset_settings_cache()
+    yield
+    reset_settings_cache()
 
 
 @pytest.fixture
 def settings() -> Settings:
     return Settings(
         llm_mode="offline",
+        marketplace_source="fixtures",
+        serpapi_key=None,
         langsmith_tracing=False,
         environment="test",
         log_json=True,

@@ -57,6 +57,7 @@ class ValidationFailure(StrEnum):
     NOT_IN_RANKED_SET = "not_in_ranked_set"
     OUT_OF_STOCK = "out_of_stock"
     FIELD_MISMATCH = "field_mismatch"
+    SELLER_CONTENT_FLAGGED = "seller_content_flagged"
 
 
 class RecommendationValidationResult(BaseModel):
@@ -163,10 +164,20 @@ class RecommendationValidator:
         if recommendation.title != provider_product.title:
             failures.append(ValidationFailure.FIELD_MISMATCH)
             detail["title"] = "differs_from_provider_title"
+        if recommendation.specs != provider_product.specs:
+            # Specifications drive the hard-constraint checks the user relies on,
+            # so a mismatch here is as serious as a wrong price.
+            failures.append(ValidationFailure.FIELD_MISMATCH)
+            detail["specs"] = "differs_from_provider_specs"
         if not provider_product.in_stock:
             failures.append(ValidationFailure.OUT_OF_STOCK)
 
-        # ---- 5. hard requirements, re-evaluated from provider data ----
+        # ---- 5. trust gate: a manipulation attempt disqualifies the listing ----
+        if candidate.trust_flagged:
+            failures.append(ValidationFailure.SELLER_CONTENT_FLAGGED)
+            detail["trust"] = "seller_text_attempted_manipulation"
+
+        # ---- 6. hard requirements, re-evaluated from provider data ----
         if not candidate.hard_requirements_passed:
             failures.append(ValidationFailure.HARD_REQUIREMENT_FAILED)
             detail["failed_constraints"] = ",".join(candidate.failed_constraints)

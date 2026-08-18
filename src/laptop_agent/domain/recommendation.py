@@ -15,6 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field, HttpUrl, model_validator
 
 from .enums import Marketplace
 from .money import Money
+from .product import AppliedOffer, LaptopSpecs
 
 
 class TradeOff(BaseModel):
@@ -32,10 +33,29 @@ class RunnerUp(BaseModel):
     product_id: str
     marketplace: Marketplace
     title: Annotated[str, Field(max_length=300)]
+    brand: Annotated[str, Field(max_length=32)] = ""
     url: HttpUrl
+    rating: Annotated[float, Field(ge=0, le=5)] | None = None
+    rating_count: Annotated[int, Field(ge=0)] = 0
+    listed_price: Money
     effective_price: Money
+    upfront_savings: Money
+    cashback_value: Money
+    unmet_conditional_offers: list[str] = Field(default_factory=list)
+    #: Copied from the validated provider product, so each result can be rendered
+    #: as its own card without the UI re-deriving anything.
+    specs: LaptopSpecs
     score: Annotated[Decimal, Field(ge=0, le=1)]
     why_not: Annotated[str, Field(max_length=280)] = ""
+
+    @model_validator(mode="after")
+    def _price_coherence(self) -> RunnerUp:
+        if (
+            self.listed_price.amount - self.upfront_savings.amount
+            != self.effective_price.amount
+        ):
+            raise ValueError("effective_price must equal listed_price - upfront_savings")
+        return self
 
 
 class Recommendation(BaseModel):
@@ -46,8 +66,14 @@ class Recommendation(BaseModel):
     product_id: str
     marketplace: Marketplace
     title: Annotated[str, Field(max_length=300)]
+    brand: Annotated[str, Field(max_length=32)] = ""
     #: Copied verbatim from the provider-returned product. Never LLM-authored.
     url: HttpUrl
+    rating: Annotated[float, Field(ge=0, le=5)] | None = None
+    rating_count: Annotated[int, Field(ge=0)] = 0
+    #: Copied from the validated provider product. The validator re-checks these
+    #: against provider data, so the UI can display them as authoritative.
+    specs: LaptopSpecs
 
     listed_price: Money
     effective_price: Money
@@ -55,13 +81,16 @@ class Recommendation(BaseModel):
     cashback_value: Money
     #: Offers the user would additionally get if they qualify. Never assumed.
     unmet_conditional_offers: list[str] = Field(default_factory=list)
+    #: The discounts actually subtracted, so the price can be shown as a
+    #: breakdown rather than a single unexplained number.
+    applied_offers: list[AppliedOffer] = Field(default_factory=list)
 
     score: Annotated[Decimal, Field(ge=0, le=1)]
     scoring_version: str
 
     rationale: Annotated[str, Field(min_length=10, max_length=1200)]
     trade_offs: Annotated[list[TradeOff], Field(max_length=6)] = Field(default_factory=list)
-    runner_ups: Annotated[list[RunnerUp], Field(max_length=4)] = Field(default_factory=list)
+    runner_ups: Annotated[list[RunnerUp], Field(max_length=5)] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")

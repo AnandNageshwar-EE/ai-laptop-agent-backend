@@ -67,6 +67,8 @@ class LaptopAgentState(TypedDict, total=False):
 
     # ----- pricing / ranking -----
     candidates: list[ProductCandidate]
+    #: "marketplace:product_id" of listings disqualified for attempted manipulation.
+    trust_excluded: list[str]
     ranked_products: list[ProductScore]
 
     # ----- recommendation -----
@@ -119,6 +121,7 @@ def initial_state(
         offers=[],
         quarantined_offers=[],
         candidates=[],
+        trust_excluded=[],
         ranked_products=[],
         recommendation=None,
         trade_off_required=False,

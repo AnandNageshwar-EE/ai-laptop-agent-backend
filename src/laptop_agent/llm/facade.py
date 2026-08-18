@@ -170,19 +170,25 @@ def _candidate_view(candidate: ProductCandidate) -> dict[str, Any]:
         "brand": candidate.product.brand,
         "rating": candidate.product.rating,
         "rating_count": candidate.product.rating_count,
+        # Unknown specifications are omitted rather than sent as nulls, so the
+        # model has nothing to narrate about a value nobody reported.
         "specs": {
-            "ram_gb": specs.ram_gb,
-            "storage_gb": specs.storage_gb,
-            "storage_type": specs.storage_type,
-            "cpu": specs.cpu,
-            "gpu": specs.gpu,
-            "dedicated_gpu": specs.dedicated_gpu,
-            "screen_inches": specs.screen_inches,
-            "weight_kg": specs.weight_kg,
-            "battery_hours": specs.battery_hours,
-            "os": specs.os,
-            "touchscreen": specs.touchscreen,
-            "refresh_rate_hz": specs.refresh_rate_hz,
+            key: value
+            for key, value in {
+                "ram_gb": specs.ram_gb,
+                "storage_gb": specs.storage_gb,
+                "storage_type": specs.storage_type,
+                "cpu": specs.cpu,
+                "gpu": specs.gpu,
+                "dedicated_gpu": specs.dedicated_gpu,
+                "screen_inches": specs.screen_inches,
+                "weight_kg": specs.weight_kg,
+                "battery_hours": specs.battery_hours,
+                "os": specs.os,
+                "touchscreen": specs.touchscreen,
+                "refresh_rate_hz": specs.refresh_rate_hz,
+            }.items()
+            if value not in (None, "")
         },
         "price_description": {
             "effective_price_display": str(candidate.price.effective_price),

@@ -75,13 +75,35 @@ zero-width evasion (`ignore<ZWSP>all<ZWSP>previous` and `ig<ZWSP>nore`).
 
 The same scanner runs over seller-authored text, but the response differs:
 
-- User input that attacks the system is **blocked**.
-- Marketplace text that attacks the system is **kept as data and flagged**.
+- User input that attacks the system is **blocked** — the turn stops.
+- Marketplace text that attacks the system is **kept as data, flagged, and the
+  listing is disqualified from being recommended** — the search continues.
 
-That asymmetry is deliberate. Rejecting a listing because its description is
-hostile would hand competitors a delisting primitive: poison a rival's
-description and it disappears from the user's results. The `FK-INJECT-01`
-fixture exercises this path on every run.
+Three distinct decisions, and it is worth separating them because an earlier
+version of this design conflated the second and third:
+
+1. **Does hostile text break the search?** No. The listing is validated and
+   processed like any other, so one poisoned description cannot deny service to
+   the user or make a whole marketplace response fail.
+2. **Is the text ever followed?** No. It is wrapped as untrusted data, and it is
+   also neutralised before display (`guardrails/display.py`) so the payload is
+   not echoed onto the user's screen.
+3. **Can the listing still win the recommendation?** **No.** This is the part
+   that was originally wrong. "Don't let hostile text break the search" does not
+   imply "the listing stays eligible to win". A seller controls their own
+   description, so demoting it penalises the party responsible, not a victim —
+   and leaving it eligible means the injection achieves its goal (promotion)
+   even though the model never obeyed it.
+
+`ProductCandidate.trust_flagged` implements (3): the candidate is built and
+counted, excluded from ranking by `is_recommendable`, refused again by the
+recommendation validator as `SELLER_CONTENT_FLAGGED` (defence in depth), and the
+exclusion is **disclosed to the user** rather than being a silent delisting.
+
+The `FK-INJECT-01` fixture exercises this on every run. It is priced at
+₹31,990 with 8GB RAM: cheap enough that on a query without a RAM floor it
+out-scores every legitimate option (0.548 vs 0.512), which is exactly why the
+gate is needed rather than relying on it failing on merit.
 
 ## 4. Trust framing
 
@@ -225,7 +247,7 @@ and `"16GB RAM under 80000 rupees"` passes through untouched.
 |------|----------------|
 | `test_input_guardrails.py` | 17 attack strings blocked; 7 legitimate requests not |
 | `test_scope_guardrail.py` | Disallowed topics blocked at every stage; terse answers allowed |
-| `test_marketplace_injection.py` | Hostile listing kept as data and flagged; fence cannot be escaped |
+| `test_marketplace_injection.py` | Hostile listing flagged, disqualified and disclosed; never wins even when cheapest; payload neutralised before display; fence cannot be escaped |
 | `test_tool_guardrails.py` | No URL field; 13 malformed-product cases quarantined |
 | `test_price_validator.py` | All eight price rules, plus order-independence |
 | `test_recommendation_validator.py` | 15 tampering attacks caught |
