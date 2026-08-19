@@ -32,7 +32,6 @@ from ..guardrails.recommendation_validator import (
     ProviderRegistry,
     RecommendationValidator,
 )
-from ..guardrails.result import SAFE_RESPONSES
 from ..guardrails.scope_guardrail import ConversationStage, ScopeGuardrail
 from ..guardrails.tool_input import FetchOffersRequest, SearchProductsRequest
 from ..guardrails.tool_output import MarketplaceResponseValidator
@@ -40,9 +39,8 @@ from ..llm.facade import Reasoner
 from ..llm.structured import StructuredOutputError
 from ..marketplace.registry import MarketplaceRegistry, build_registry
 from ..observability.metrics import RunMetrics
-from ..prompts.provider import PromptTask
 from ..pricing.calculator import PriceCalculator
-from ..ranking.scorer import rank_candidates, score_candidate
+from ..ranking.scorer import near_budget_candidates, rank_candidates, score_candidate
 from ..security.logging import get_logger
 from .state import LaptopAgentState, candidate_key
 
@@ -625,6 +623,28 @@ class AgentNodes:
                 for candidate, score in zip(runner_ups, ranked[1:6])
             ]
 
+            # Options just over the stated budget. Shown, never recommended.
+            near_budget = [
+                RunnerUp(
+                    product_id=candidate.product.product_id,
+                    marketplace=candidate.product.marketplace,
+                    title=candidate.product.title,
+                    brand=candidate.product.brand,
+                    url=candidate.product.url,
+                    rating=candidate.product.rating,
+                    rating_count=candidate.product.rating_count,
+                    listed_price=candidate.price.listed_price,
+                    effective_price=candidate.price.effective_price,
+                    upfront_savings=candidate.price.total_upfront_discount,
+                    cashback_value=candidate.price.cashback_value,
+                    unmet_conditional_offers=candidate.price.unmet_conditional_offers,
+                    specs=candidate.product.specs,
+                    score=score.total,
+                    why_not="Above your stated budget, listed for comparison only.",
+                )
+                for candidate, score in near_budget_candidates(candidates, requirements)
+            ]
+
             # Every price field is copied from the validated breakdown. The model
             # contributed prose only.
             recommendation = Recommendation(
@@ -647,6 +667,7 @@ class AgentNodes:
                 rationale=rationale_report.text or "This option matches your stated requirements.",
                 trade_offs=trade_offs,
                 runner_ups=runner_up_models,
+                near_budget_alternatives=near_budget,
                 warnings=list(winner.price.warnings),
             )
             return {"recommendation": recommendation}

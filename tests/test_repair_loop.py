@@ -7,10 +7,8 @@ validation failure and assert the graph re-ranks with the offender excluded.
 
 from __future__ import annotations
 
-import pytest
 
-from laptop_agent.audit import AuditEvent, CollectingAuditSink
-from laptop_agent.config import Settings
+from laptop_agent.audit import AuditEvent
 from laptop_agent.graph.builder import build_graph, make_route_after_validation
 from laptop_agent.graph.nodes import AgentNodes
 from laptop_agent.graph.state import initial_state

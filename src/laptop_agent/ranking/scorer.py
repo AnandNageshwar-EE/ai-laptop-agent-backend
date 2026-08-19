@@ -15,6 +15,7 @@ compared against a score computed by different code.
 
 from __future__ import annotations
 
+import re
 from decimal import Decimal
 
 from ..domain.enums import UseCase
@@ -105,6 +106,85 @@ def _ratio(value: Decimal, ceiling: Decimal) -> Decimal:
     return _clamp(value / ceiling) if ceiling > 0 else _ZERO
 
 
+#: GPU model number, e.g. "RTX 4060" -> 4060.
+_GPU_MODEL = re.compile(r"\b(?:RTX|GTX)\s*(\d{4})\b", re.IGNORECASE)
+#: VRAM stated alongside the GPU, e.g. "RTX 4060 8GB".
+_GPU_VRAM = re.compile(r"(\d{1,2})\s*GB", re.IGNORECASE)
+
+#: VRAM at or above this is treated as full credit. 12 GB covers current
+#: mainstream cards and is where ML workloads stop being VRAM-starved.
+_VRAM_CEILING = Decimal("12")
+
+#: No dedicated GPU may score below this, whatever its tier.
+_DEDICATED_GPU_FLOOR = Decimal("0.16")
+
+#: Top of the ordinal scale — an x090 on the newest generation.
+_GPU_ORDINAL_CEILING = Decimal("7.0")
+
+
+def _gpu_strength(specs: object) -> Decimal:
+    """Graded GPU capability, not a yes/no.
+
+    Scoring a dedicated GPU as a boolean made an RTX 2050 score identically to
+    an RTX 5060, so the cheaper and weaker card won on price alone — exactly
+    wrong for gaming and ML, where GPU tier and VRAM are the deciding numbers.
+
+    Two signals, because titles are inconsistent about which they state:
+
+    * **model number** — the series and tier digits ("4060" -> series 4, tier 60)
+    * **VRAM** — the number that matters most for machine learning
+
+    When only one is available it carries the score. When neither can be read,
+    the GPU gets middling credit: enough to beat integrated graphics, not enough
+    to outrank a card whose capability is actually known.
+    """
+    dedicated = bool(getattr(specs, "dedicated_gpu", False))
+    text = str(getattr(specs, "gpu", "") or "")
+    if not dedicated:
+        return Decimal("0.15")
+
+    tier: Decimal | None = None
+    match = _GPU_MODEL.search(text)
+    if match:
+        number = int(match.group(1))
+        # NVIDIA model numbers are <series><tier>, and the series is two digits:
+        # 3050 -> (30, 50), 4060 -> (40, 60), 1650 -> (16, 50). Splitting on the
+        # thousands digit instead gave 3050 -> tier 5 but 1650 -> tier 65, which
+        # scored a GTX 1650 above every RTX card.
+        series, notch = number // 100, number % 100
+        generation = (Decimal(series) - Decimal("20")) / Decimal("10")
+        tier_notch = (Decimal(notch) - Decimal("50")) / Decimal("10")
+        # A generation is worth about one and a half tier notches, not four.
+        # Weighting it at four made an RTX 5060 outrank an RTX 4090, which is
+        # badly wrong — moving up a tier within a generation buys more than
+        # moving up a generation at the same tier. Pre-RTX cards (GTX 16xx) go
+        # negative and land on the entry-level floor.
+        ordinal = generation * Decimal("1.5") + tier_notch
+        tier = _ratio(max(_ZERO, ordinal), _GPU_ORDINAL_CEILING)
+
+    vram: Decimal | None = None
+    vram_match = _GPU_VRAM.search(text)
+    if vram_match:
+        gigabytes = Decimal(vram_match.group(1))
+        if 2 <= gigabytes <= 48:
+            vram = _ratio(gigabytes, _VRAM_CEILING)
+
+    if tier is not None and vram is not None:
+        strength = (tier + vram) / Decimal("2")
+    elif vram is not None:
+        strength = vram
+    elif tier is not None:
+        strength = tier
+    else:
+        # Dedicated but unidentifiable.
+        strength = Decimal("0.45")
+
+    # Floor: an entry-level dedicated card still beats integrated graphics. The
+    # raw tier maths bottoms out at zero for an RTX 2050, which would have
+    # scored it below the 0.15 given to integrated — plainly wrong.
+    return _clamp(max(_DEDICATED_GPU_FLOOR, strength))
+
+
 def _dec(value: float | int | None) -> Decimal | None:
     """Decimal, or ``None`` when the specification is unknown."""
     return None if value is None else Decimal(str(value))
@@ -188,6 +268,50 @@ def rank_candidates(
         scores,
         key=lambda score: (-score.total, score.marketplace.value, score.product_id),
     )
+
+
+#: How far above the stated budget an option may be and still be worth showing.
+NEAR_BUDGET_TOLERANCE = Decimal("0.10")
+
+
+def near_budget_candidates(
+    candidates: list[ProductCandidate],
+    requirements: LaptopRequirements,
+    *,
+    tolerance: Decimal = NEAR_BUDGET_TOLERANCE,
+    limit: int = 3,
+) -> list[tuple[ProductCandidate, ProductScore]]:
+    """Candidates whose *only* problem is being slightly over budget.
+
+    A stated budget stays a hard ceiling on what gets recommended. But refusing
+    even to mention a machine 5% over that ceiling — when it carries double the
+    VRAM — withholds something the person would obviously want to know. These are
+    returned separately, clearly over budget, and are never eligible to win.
+
+    "Only problem" is literal: a candidate failing any other mandatory constraint
+    is not near-budget, it is simply unsuitable.
+    """
+    budget = requirements.budget_max
+    if budget is None:
+        return []
+    ceiling = budget.amount * (_ONE + tolerance)
+
+    eligible: list[tuple[ProductCandidate, ProductScore]] = []
+    for candidate in candidates:
+        if candidate.trust_flagged or not candidate.price.is_valid:
+            continue
+        if not candidate.product.in_stock:
+            continue
+        # Budget must be the sole failure.
+        if set(candidate.failed_constraints) != {"budget_max"}:
+            continue
+        paid = candidate.price.effective_price.amount
+        if not (budget.amount < paid <= ceiling):
+            continue
+        eligible.append((candidate, score_candidate(candidate, requirements)))
+
+    eligible.sort(key=lambda pair: (-pair[1].total, pair[0].product.product_id))
+    return eligible[:limit]
 
 
 # ---------------------------------------------------------------------------
@@ -303,8 +427,21 @@ def _budget_headroom(
     used = candidate.price.effective_price.amount / budget.amount
     if used >= _ONE:
         return _ZERO
-    headroom = (_ONE - used) / Decimal("0.4")
-    return _clamp(headroom)
+
+    if requirements.use_case in _GPU_RELEVANT or requirements.dedicated_gpu_required:
+        # For a capability-driven need, spending the budget is not a fault.
+        # The original curve gave full credit below 60% of budget, which — with
+        # value_for_money also favouring cheap — pushed the ranking toward
+        # under-powered machines when the person had already said what they were
+        # willing to spend. Anything from half the budget upward is treated as
+        # equally sensible; only a very cheap pick is marked down, and only
+        # mildly, for leaving capability unbought.
+        if used >= Decimal("0.5"):
+            return _ONE
+        return _clamp(Decimal("0.7") + used * Decimal("0.6"))
+
+    # Everyday use cases: leaving money unspent is a genuine benefit.
+    return _clamp((_ONE - used) / Decimal("0.4"))
 
 
 def _spec_strength(
@@ -320,7 +457,7 @@ def _spec_strength(
         "portability": _ZERO
         if weight is None
         else _clamp((Decimal("2.5") - weight) / Decimal("1.2")),
-        "gpu": _ONE if specs.dedicated_gpu else Decimal("0.2"),
+        "gpu": _gpu_strength(specs),
         "refresh": _credit(specs.refresh_rate_hz, Decimal("165")),
     }
     profile = _SPEC_PROFILE[requirements.use_case]

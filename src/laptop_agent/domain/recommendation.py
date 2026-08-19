@@ -91,6 +91,12 @@ class Recommendation(BaseModel):
     rationale: Annotated[str, Field(min_length=10, max_length=1200)]
     trade_offs: Annotated[list[TradeOff], Field(max_length=6)] = Field(default_factory=list)
     runner_ups: Annotated[list[RunnerUp], Field(max_length=5)] = Field(default_factory=list)
+    #: Options just over the stated budget, surfaced because silently hiding a
+    #: materially better machine a few percent above the ceiling is unhelpful.
+    #: Never the recommendation — the stated budget is still respected.
+    near_budget_alternatives: Annotated[list[RunnerUp], Field(max_length=3)] = Field(
+        default_factory=list
+    )
     warnings: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")

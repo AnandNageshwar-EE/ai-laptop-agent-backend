@@ -111,6 +111,8 @@ class RecommendationView(BaseModel):
     rationale: str
     trade_offs: list[dict[str, str]] = Field(default_factory=list)
     runner_ups: list[CandidateRowView] = Field(default_factory=list)
+    #: Just over the stated budget. Shown for comparison, never recommended.
+    near_budget_alternatives: list[CandidateRowView] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
     #: How many listings were disqualified for attempting to manipulate the agent.
     flagged_listing_count: int = 0

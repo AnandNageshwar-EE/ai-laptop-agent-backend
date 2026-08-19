@@ -17,7 +17,11 @@ from .enums import Marketplace
 
 #: Bump when weights or component maths change, so old scores are never
 #: silently compared against new ones.
-SCORING_VERSION = "v1"
+#:
+#: v2 — GPU strength became graded (model tier + VRAM) instead of a boolean, and
+#: budget headroom stopped rewarding under-spend for capability-driven use cases.
+#: A v1 score is not comparable to a v2 score.
+SCORING_VERSION = "v2"
 
 #: Tolerance when comparing a stored score against a recomputed one.
 SCORE_EPSILON = Decimal("0.0001")

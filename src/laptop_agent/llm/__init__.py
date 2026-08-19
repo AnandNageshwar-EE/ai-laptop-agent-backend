@@ -19,6 +19,8 @@ __all__ = [
     "ExtractedBudget",
     "InvocationStats",
     "LLMUnavailableError",
+    "build_chat_model",
+    "describe_model",
     "OfflineReasoner",
     "RecommendationExplanation",
     "RequirementExtraction",

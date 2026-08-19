@@ -6,7 +6,7 @@ from decimal import Decimal
 
 import pytest
 
-from laptop_agent.domain.enums import Bank, Currency, Marketplace, OfferKind, ProductCategory
+from laptop_agent.domain.enums import Currency, Marketplace, ProductCategory
 from laptop_agent.domain.money import Money
 from laptop_agent.domain.product import LaptopSpecs, Offer, Product, ProductCandidate
 from laptop_agent.domain.recommendation import Recommendation

@@ -88,9 +88,13 @@ def test_attack_returns_200_with_a_safe_refusal(client):
     body = response.json()
     assert body["blocked"] is True
     assert body["recommendation"] is None
-    assert body["response_text"] == (
-        "I can help you find and compare laptops. Please provide your laptop requirements."
-    )
+    from laptop_agent.guardrails.result import SAFE_RESPONSES
+    from laptop_agent.domain.enums import RejectionReason
+
+    # Asserted against the constant rather than a copy of the text, so rewording
+    # a user-facing message does not require editing tests in two places.
+    assert body["response_text"] == SAFE_RESPONSES[RejectionReason.SYSTEM_MANIPULATION]
+    assert body["response_text"].startswith("I can't help with that")
 
 
 def test_internal_errors_do_not_leak_detail(monkeypatch):

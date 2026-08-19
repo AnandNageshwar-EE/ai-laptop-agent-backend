@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from laptop_agent.domain.enums import RejectionReason
+from laptop_agent.guardrails.result import SAFE_RESPONSES
 from laptop_agent.guardrails.scope_guardrail import (
     ConversationStage,
     ScopeGuardrail,
@@ -38,9 +39,8 @@ def test_blocks_disallowed_topics(guardrail, text):
     result = guardrail.check(text)
     assert result.blocked, f"not blocked: {text!r}"
     assert result.reason is RejectionReason.DISALLOWED_TOPIC
-    assert result.user_message == (
-        "I can help with laptop selection, pricing and marketplace comparison."
-    )
+    assert result.user_message == SAFE_RESPONSES[RejectionReason.DISALLOWED_TOPIC]
+    assert result.user_message.startswith("I can't help with that")
 
 
 def test_disallowed_topics_blocked_at_every_stage(guardrail):
@@ -107,3 +107,38 @@ def test_stock_is_shopping_vocabulary_not_finance(guardrail):
     # "in stock" must not trip the financial-advice patterns.
     assert guardrail.check("is the ASUS Vivobook in stock?").allowed
     assert guardrail.check("out of stock on amazon, any alternative laptop?").allowed
+
+
+# ---------------------------------------------------------------------------
+# Properties of the refusal text itself.
+# ---------------------------------------------------------------------------
+
+
+def test_manipulation_replies_are_indistinguishable():
+    """A prober must not learn which filter fired from the reply.
+
+    Wording the three manipulation categories differently would hand an attacker
+    a free oracle for narrowing down what the guardrails look for.
+    """
+    family = (
+        RejectionReason.PROMPT_INJECTION,
+        RejectionReason.SYSTEM_MANIPULATION,
+        RejectionReason.SECRET_EXFILTRATION,
+    )
+    assert len({SAFE_RESPONSES[reason] for reason in family}) == 1
+
+
+def test_every_refusal_states_it_cannot_help_and_what_it_does():
+    for reason, message in SAFE_RESPONSES.items():
+        assert "laptop" in message.lower(), f"{reason.value} never mentions laptops"
+        assert len(message) <= 240, f"{reason.value} is not concise ({len(message)} chars)"
+
+
+def test_no_refusal_describes_the_filter():
+    forbidden = (
+        "injection", "pattern", "regex", "guardrail", "system prompt",
+        "detected", "blocklist", "denylist", "filter", "violation",
+    )
+    for reason, message in SAFE_RESPONSES.items():
+        hits = [term for term in forbidden if term in message.lower()]
+        assert not hits, f"{reason.value} leaks {hits}"

@@ -29,39 +29,51 @@ class GuardrailAction(StrEnum):
     BLOCK = "block"
 
 
-#: The canned responses. Short, identical for every rejection of a given class,
-#: and free of any detail about what was detected — an attacker learns nothing
-#: about the filter from the reply.
+#: The canned responses.
+#:
+#: Two rules shape these.
+#:
+#: **The injection family must be word-for-word identical.** ``PROMPT_INJECTION``,
+#: ``SYSTEM_MANIPULATION`` and ``SECRET_EXFILTRATION`` share one message, so
+#: someone probing for the prompt learns nothing from which reply comes back. A
+#: different wording per category would be a free oracle.
+#:
+#: **Nothing describes the filter.** No reply mentions a pattern, a rule, a
+#: category, or that anything was detected — that is exactly the implementation
+#: detail an attacker is fishing for. Each one refuses plainly, says what the
+#: agent does handle, and invites a real request.
+
+#: Shared by every reply to an attempted manipulation. Do not vary per category.
+_MANIPULATION_REPLY = (
+    "I can't help with that. I'm a laptop shopping assistant — I can find "
+    "laptops, compare prices across Amazon and Flipkart, and work out what "
+    "you'd actually pay after offers. What kind of laptop are you looking for?"
+)
+
 SAFE_RESPONSES: dict[RejectionReason, str] = {
     RejectionReason.EMPTY_INPUT: (
-        "I can help you find and compare laptops. Please provide your laptop "
-        "requirements."
+        "I didn't catch any laptop requirements there. Tell me what you need — a "
+        "budget, what you'll mainly use it for, and any must-have specifications."
     ),
     RejectionReason.INPUT_TOO_LONG: (
-        "That request is too long for me to process. Please describe your laptop "
-        "requirements in a few sentences."
+        "That message is too long for me to work with. Could you describe your "
+        "laptop requirements in a few sentences?"
     ),
     RejectionReason.MALFORMED_INPUT: (
-        "I could not read that request. Please describe your laptop requirements "
-        "in plain text."
+        "I couldn't read that. Please describe your laptop requirements in plain "
+        "text — for example, \"a laptop for coding under 80,000 with 16GB RAM\"."
     ),
-    RejectionReason.PROMPT_INJECTION: (
-        "I can help you find and compare laptops. Please provide your laptop "
-        "requirements."
-    ),
-    RejectionReason.SYSTEM_MANIPULATION: (
-        "I can help you find and compare laptops. Please provide your laptop "
-        "requirements."
-    ),
-    RejectionReason.SECRET_EXFILTRATION: (
-        "I can help you find and compare laptops. Please provide your laptop "
-        "requirements."
-    ),
+    RejectionReason.PROMPT_INJECTION: _MANIPULATION_REPLY,
+    RejectionReason.SYSTEM_MANIPULATION: _MANIPULATION_REPLY,
+    RejectionReason.SECRET_EXFILTRATION: _MANIPULATION_REPLY,
     RejectionReason.DISALLOWED_TOPIC: (
-        "I can help with laptop selection, pricing and marketplace comparison."
+        "I can't help with that. I only handle laptop shopping — finding models, "
+        "comparing prices, and checking which offers you qualify for."
     ),
     RejectionReason.OUT_OF_SCOPE: (
-        "I can help with laptop selection, pricing and marketplace comparison."
+        "That's outside what I can help with. I'm a laptop shopping assistant: "
+        "tell me your budget and what you'll use the laptop for, and I'll compare "
+        "options across Amazon and Flipkart."
     ),
 }
 

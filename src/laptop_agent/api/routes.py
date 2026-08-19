@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from fastapi import APIRouter, Depends
 
 from ..agent import AgentReply, LaptopAgent, get_agent
 from ..config import get_settings
 from ..domain.recommendation import Recommendation
-from ..prompts.provider import PromptTask, get_prompt_provider
+from ..prompts.provider import get_prompt_provider
 from ..domain.product import LaptopSpecs
 from ..guardrails.display import neutralise_for_display
 from .schemas import (
@@ -134,6 +136,29 @@ def _to_specs_view(specs: LaptopSpecs) -> SpecsView:
     )
 
 
+def _to_row(runner: Any) -> CandidateRowView:
+    """Shape one candidate for a comparison card."""
+    return CandidateRowView(
+        product_id=runner.product_id,
+        marketplace=runner.marketplace.value,
+        title=neutralise_for_display(runner.title)[0],
+        brand=runner.brand,
+        url=str(runner.url),
+        rating=runner.rating,
+        rating_count=runner.rating_count,
+        listed_price=str(runner.listed_price),
+        effective_price=str(runner.effective_price),
+        upfront_savings=str(runner.upfront_savings),
+        cashback_value=str(runner.cashback_value),
+        has_discount=runner.upfront_savings.amount > 0,
+        has_cashback=runner.cashback_value.amount > 0,
+        unmet_conditional_offer_count=len(runner.unmet_conditional_offers),
+        score=float(runner.score),
+        specs=_to_specs_view(runner.specs),
+        why_not=runner.why_not,
+    )
+
+
 def _to_view(recommendation: Recommendation | None) -> RecommendationView | None:
     if recommendation is None:
         return None
@@ -171,27 +196,9 @@ def _to_view(recommendation: Recommendation | None) -> RecommendationView | None
             {"dimension": item.dimension, "detail": item.detail}
             for item in recommendation.trade_offs
         ],
-        runner_ups=[
-            CandidateRowView(
-                product_id=runner.product_id,
-                marketplace=runner.marketplace.value,
-                title=neutralise_for_display(runner.title)[0],
-                brand=runner.brand,
-                url=str(runner.url),
-                rating=runner.rating,
-                rating_count=runner.rating_count,
-                listed_price=str(runner.listed_price),
-                effective_price=str(runner.effective_price),
-                upfront_savings=str(runner.upfront_savings),
-                cashback_value=str(runner.cashback_value),
-                has_discount=runner.upfront_savings.amount > 0,
-                has_cashback=runner.cashback_value.amount > 0,
-                unmet_conditional_offer_count=len(runner.unmet_conditional_offers),
-                score=float(runner.score),
-                specs=_to_specs_view(runner.specs),
-                why_not=runner.why_not,
-            )
-            for runner in recommendation.runner_ups
+        near_budget_alternatives=[
+            _to_row(runner) for runner in recommendation.near_budget_alternatives
         ],
+        runner_ups=[_to_row(runner) for runner in recommendation.runner_ups],
         warnings=recommendation.warnings,
     )

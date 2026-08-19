@@ -20,14 +20,13 @@ point of an experiment is that the prompt or the model is the only variable.
 from __future__ import annotations
 
 import argparse
-import json
 import sys
 from collections import Counter
 from typing import Any
 
 from ..agent import AgentReply, LaptopAgent
 from ..config import Settings
-from .dataset import CASES, EvalCase, cases_for
+from .dataset import EvalCase, cases_for
 from .evaluators import BLOCKING_KEYS, EvalResult, run_all
 
 

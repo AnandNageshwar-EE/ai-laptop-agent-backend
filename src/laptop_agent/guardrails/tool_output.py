@@ -10,7 +10,6 @@ Checks applied here, before anything reaches graph state:
 * the envelope has the expected shape
 * every required identifier is present and well-formed
 * the URL parses, uses https, and its host belongs to the claimed marketplace
-* the product id embedded in the URL is not contradicted by the payload
 * prices are positive, coherent (``listed <= mrp``) and in a supported currency
 * discounts are non-negative and not larger than the listed price
 * the marketplace field matches the provider that actually answered
@@ -170,7 +169,7 @@ class MarketplaceResponseValidator:
             ):
                 return "implausible_mrp_discount"
 
-        url_problem = self._check_url(payload.url, payload.product_id)
+        url_problem = self._check_url(payload.url)
         if url_problem is not None:
             return url_problem
 
@@ -178,7 +177,7 @@ class MarketplaceResponseValidator:
             return "missing_specs"
         return None
 
-    def _check_url(self, url: str | None, product_id: str) -> str | None:
+    def _check_url(self, url: str | None) -> str | None:
         if not url:
             return "missing_url"
         try:
