@@ -767,18 +767,29 @@ class AgentNodes:
     # ------------------------------------------------------------------
 
     def no_results_node(self, state: LaptopAgentState) -> dict[str, Any]:
-        constraints = state.get("requirements")
-        text = NO_RESULTS_RESPONSE
-        if constraints is not None and constraints.mandatory_fields:
-            text += (
-                "\n\nThe requirements I treated as non-negotiable were: "
-                + ", ".join(constraints.mandatory_fields).replace("_", " ")
-                + "."
-            )
-        return {"response_text": text, "recommendation": None}
+        def run() -> dict[str, Any]:
+            constraints = state.get("requirements")
+            text = NO_RESULTS_RESPONSE
+            if constraints is not None and constraints.mandatory_fields:
+                text += (
+                    "\n\nThe requirements I treated as non-negotiable were: "
+                    + ", ".join(constraints.mandatory_fields).replace("_", " ")
+                    + "."
+                )
+            return {"response_text": text, "recommendation": None}
+
+        # Timed like every other node. These two terminal nodes were originally
+        # left unwrapped, so they executed correctly but never appeared in
+        # node_latencies_ms — which made the metrics look as though the
+        # decline paths were dead code.
+        return _timed("no_results", self.metrics, run)
 
     def validation_failed_node(self, state: LaptopAgentState) -> dict[str, Any]:
-        return {"response_text": VALIDATION_FAILED_RESPONSE, "recommendation": None}
+        return _timed(
+            "validation_failed",
+            self.metrics,
+            lambda: {"response_text": VALIDATION_FAILED_RESPONSE, "recommendation": None},
+        )
 
 
 # ---------------------------------------------------------------------------

@@ -350,3 +350,31 @@ def test_mandatory_misses_are_not_reported_as_preferences():
     )
     requirements = LaptopRequirements(min_ram_gb=16, mandatory_fields=["min_ram_gb"])
     assert unmet_preferences(product, requirements) == []
+
+
+def test_every_graph_node_is_instrumented(settings, audit):
+    """Each node must report its own latency.
+
+    The two terminal decline nodes were originally left unwrapped: they ran
+    correctly but never appeared in node_latencies_ms, which made the metrics
+    read as though those paths were never taken.
+    """
+    from laptop_agent.graph.builder import build_graph
+    from laptop_agent.graph.nodes import AgentNodes
+    from laptop_agent.graph.state import initial_state
+    from laptop_agent.observability.metrics import RunMetrics
+
+    def nodes_hit(message: str) -> set[str]:
+        metrics = RunMetrics(session_id="sess_" + "0" * 32)
+        agent_nodes = AgentNodes(metrics=metrics, settings=settings, audit=audit)
+        build_graph(agent_nodes, settings=settings).invoke(
+            initial_state(session_id="sess_" + "0" * 32, user_request=message)
+        )
+        return {t.node for t in metrics.node_timings}
+
+    happy = nodes_hit("laptop for software development under 80000 with at least 16GB RAM")
+    declined = nodes_hit("laptop with at least 128GB RAM under 20000, must have dedicated GPU")
+
+    assert "recommendation_validation" in happy
+    # The decline path must report itself, not vanish from the metrics.
+    assert "no_results" in declined, "no_results ran but reported no latency"
