@@ -7,6 +7,7 @@ import pytest
 from laptop_agent.agent import LaptopAgent
 from laptop_agent.audit import AuditEvent, CollectingAuditSink
 from laptop_agent.config import Settings
+from laptop_agent.domain import LaptopRequirements, UseCase
 from laptop_agent.session import InMemorySessionStore
 
 
@@ -226,3 +227,126 @@ def test_identical_requests_produce_identical_recommendations(agent):
     assert first.recommendation.product_id == second.recommendation.product_id
     assert first.recommendation.effective_price == second.recommendation.effective_price
     assert first.recommendation.score == second.recommendation.score
+
+
+# ---------------------------------------------------------------------------
+# Regression: a follow-up turn must not erase what the first turn established.
+#
+# Reported failure: "laptop with less weight and slim for gaming and AI/ML"
+# produced a clarifying question that itself named a 14-inch sub-1.5 kg gaming
+# machine with a dedicated GPU — proving turn 1 understood the request. The reply
+# "2 Lakhs budget" then extracted use_case=GENERAL and dedicated_gpu_required=
+# False, and the merge treated only None/[]/"any" as unset, so those *defaults*
+# overwrote the real requirements. The agent searched for a generic laptop and
+# recommended a 2012-era machine with no GPU for an AI/ML request.
+#
+# The earlier session test only asserted the budget was applied, which is exactly
+# why this went unnoticed.
+# ---------------------------------------------------------------------------
+
+
+def test_follow_up_turn_preserves_use_case_and_specs(agent, sessions):
+    first = agent.run(message="laptop for gaming and machine learning, light and slim")
+    assert first.awaiting_clarification, "expected a budget question"
+
+    second = agent.run(message="2 Lakhs budget", session_id=first.session_id)
+
+    stored = sessions.get(second.session_id)
+    assert stored is not None and stored.requirements is not None
+    requirements = stored.requirements
+
+    # The budget arrived...
+    assert requirements.budget_max is not None
+    assert requirements.budget_max.amount == 200000
+    # ...and nothing established on turn 1 was lost.
+    assert requirements.use_case is not UseCase.GENERAL, "use case was erased"
+    assert requirements.dedicated_gpu_required, "GPU requirement was erased"
+    assert second.diagnostics["user_requirement_category"] != "unknown"
+
+
+def test_default_values_never_overwrite_known_requirements():
+    """Unit-level guard on the merge, independent of the LLM or the graph."""
+    from laptop_agent.graph.nodes import _to_requirements
+    from laptop_agent.llm.schemas import ExtractedBudget, RequirementExtraction
+
+    established = LaptopRequirements(
+        use_case=UseCase.GAMING,
+        min_ram_gb=16,
+        max_weight_kg=1.5,
+        storage_type="ssd",
+        dedicated_gpu_required=True,
+        mandatory_fields=["min_ram_gb", "dedicated_gpu_required"],
+    )
+    # What a terse "2 Lakhs budget" reply extracts in isolation: a budget, and
+    # defaults for everything else.
+    budget_only = RequirementExtraction(budget_max=ExtractedBudget(amount=200000.0))
+
+    merged = _to_requirements(budget_only, established)
+
+    assert merged.budget_max is not None and merged.budget_max.amount == 200000
+    assert merged.use_case is UseCase.GAMING
+    assert merged.dedicated_gpu_required is True
+    assert merged.min_ram_gb == 16
+    assert merged.max_weight_kg == 1.5
+    assert merged.storage_type == "ssd"
+
+
+def test_follow_up_can_still_change_a_requirement():
+    """Defaults must not overwrite, but explicit new values must."""
+    from laptop_agent.graph.nodes import _to_requirements
+    from laptop_agent.llm.schemas import RequirementExtraction
+
+    established = LaptopRequirements(use_case=UseCase.GAMING, min_ram_gb=16)
+    revised = RequirementExtraction(use_case=UseCase.OFFICE_PRODUCTIVITY, min_ram_gb=32)
+
+    merged = _to_requirements(revised, established)
+    assert merged.use_case is UseCase.OFFICE_PRODUCTIVITY
+    assert merged.min_ram_gb == 32
+
+
+def test_unmet_soft_preferences_are_stated_not_dropped():
+    """Asking for slim-and-light *and* a gaming GPU is near-contradictory.
+
+    The agent should name which half it could not honour. Silently returning a
+    2.4 kg machine to someone who asked for a light one is the difference between
+    a recommendation and an unexplained one.
+    """
+    from laptop_agent.domain import LaptopSpecs, Money, Currency, Marketplace, Product, ProductCategory
+    from laptop_agent.graph.nodes import unmet_preferences
+
+    heavy = Product(
+        product_id="AMZ-HEAVY-1",
+        marketplace=Marketplace.AMAZON,
+        category=ProductCategory.LAPTOP,
+        title="Heavy Gaming Laptop",
+        brand="test",
+        url="https://www.amazon.in/dp/B0HEAVY01",
+        listed_price=Money(amount="136990", currency=Currency.INR),
+        specs=LaptopSpecs(ram_gb=24, storage_gb=1024, storage_type="ssd",
+                          cpu="Test", gpu="RTX 5050", dedicated_gpu=True,
+                          screen_inches=16.0, weight_kg=2.44, os="windows"),
+    )
+    wants_light = LaptopRequirements(
+        use_case=UseCase.GAMING, max_weight_kg=1.5, dedicated_gpu_required=True,
+        mandatory_fields=["dedicated_gpu_required"],
+    )
+    messages = unmet_preferences(heavy, wants_light)
+    assert messages, "the missed weight preference was not reported"
+    assert "1.5" in messages[0] and "2.44" in messages[0]
+
+
+def test_mandatory_misses_are_not_reported_as_preferences():
+    """A mandatory miss disqualifies the candidate; it is not a trade-off note."""
+    from laptop_agent.domain import LaptopSpecs, Money, Currency, Marketplace, Product, ProductCategory
+    from laptop_agent.graph.nodes import unmet_preferences
+
+    product = Product(
+        product_id="AMZ-X-1", marketplace=Marketplace.AMAZON,
+        category=ProductCategory.LAPTOP, title="Test Laptop", brand="test",
+        url="https://www.amazon.in/dp/B0X00001",
+        listed_price=Money(amount="50000", currency=Currency.INR),
+        specs=LaptopSpecs(ram_gb=8, storage_gb=512, storage_type="ssd",
+                          cpu="T", screen_inches=14.0, weight_kg=2.5, os="windows"),
+    )
+    requirements = LaptopRequirements(min_ram_gb=16, mandatory_fields=["min_ram_gb"])
+    assert unmet_preferences(product, requirements) == []

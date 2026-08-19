@@ -14,6 +14,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from pydantic import BaseModel
+
 from ..config import Settings, get_settings
 from ..domain.product import ProductCandidate
 from ..domain.requirements import LaptopRequirements
@@ -72,14 +74,24 @@ class Reasoner:
         text: str,
         *,
         previous: RequirementExtraction | None = None,
+        known: BaseModel | None = None,
         config: dict[str, Any] | None = None,
     ) -> tuple[RequirementExtraction, InvocationStats | None]:
+        """Extract requirements from one turn.
+
+        ``known`` is what the session already established. Passing it matters on
+        a follow-up turn: without it, "2 Lakhs budget" is extracted in isolation
+        and yields nothing but a budget, so the model has no way to know it is
+        answering a question about a gaming and ML machine.
+        """
         if self._structured is None:
             return self._offline.extract_requirements(text, previous=previous), None
 
         payload: dict[str, Any] = {"shopping_request": text}
         if previous is not None:
             payload["requirements_so_far"] = previous.model_dump(mode="json")
+        elif known is not None:
+            payload["requirements_so_far"] = known.model_dump(mode="json")
         messages = self._messages(
             PromptTask.REQUIREMENTS,
             wrap_untrusted(payload, TrustLabel.USER_INPUT),

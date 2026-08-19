@@ -70,12 +70,23 @@ _MANDATORY_MARKERS = re.compile(
     r"no\s+less\s+than|strictly|only|need\s+at\s+least|has\s+to|have\s+to|required)\b"
 )
 
+#: Scale words, always with the optional plural. "2 Lakhs budget" is the normal
+#: way to say this, and a trailing \b after "lakh" cannot match the "s".
+_SCALE_WORD = r"(?:k|lakhs?|lacs?|crores?)"
+#: Capturing variant, for the pattern that reads the scale back out.
+_SCALE_WORD_CAP = r"(k|lakhs?|lacs?|crores?)"
+
 _BUDGET_CEILING = re.compile(
     r"(?i)\b(?:under|below|less\s+than|within|upto|up\s+to|max(?:imum)?|"
     r"budget\s+(?:of|is)?|around|about|near|approx\w*|not\s+more\s+than)\b[^.\d]{0,12}"
-    r"([₹$]?\s*[\d,]+(?:\.\d+)?)\s*(k|lakh|lac|crore)?"
+    r"([₹$]?\s*[\d,]+(?:\.\d+)?)\s*" + _SCALE_WORD_CAP + r"?"
 )
-_BARE_AMOUNT = re.compile(r"(?i)([₹$]\s*[\d,]+(?:\.\d+)?|\b[\d,]{4,}\b|\b\d+(?:\.\d+)?\s*(?:k|lakh|lac)\b)")
+#: A bare amount, including the very common "<amount> <scale> budget" ordering
+#: where the keyword follows rather than precedes the number.
+_BARE_AMOUNT = re.compile(
+    r"(?i)([₹$]\s*[\d,]+(?:\.\d+)?|\b\d+(?:\.\d+)?\s*" + _SCALE_WORD
+    + r"|\b[\d,]{4,}\b)"
+)
 
 _SCALE = {"k": Decimal("1000"), "lakh": Decimal("100000"), "lac": Decimal("100000"),
           "crore": Decimal("10000000")}
@@ -113,7 +124,8 @@ def _to_amount(raw: str, scale: str | None) -> Decimal | None:
     except Exception:
         return None
     if scale:
-        value *= _SCALE[scale.lower()]
+        # "Lakhs" -> "lakh": the plural is stripped before the lookup.
+        value *= _SCALE[scale.lower().rstrip("s")]
     elif value < Decimal("1000"):
         # "budget 80" almost certainly means 80k in this domain.
         value *= Decimal("1000")
@@ -287,8 +299,9 @@ class OfflineReasoner:
         bare = _BARE_AMOUNT.search(text)
         if bare:
             raw = bare.group(1)
-            scale = next((unit for unit in ("lakh", "lac", "k") if unit in raw.lower()), None)
-            amount = _to_amount(re.sub(r"(?i)(k|lakh|lac)", "", raw), scale)
+            lowered = raw.lower()
+            scale = next((unit for unit in ("lakh", "lac", "crore", "k") if unit in lowered), None)
+            amount = _to_amount(re.sub(r"(?i)(k|lakhs?|lacs?|crores?)", "", raw), scale)
             if amount is not None and amount >= Decimal("10000"):
                 return ExtractedBudget(amount=float(amount), currency=currency)
         return None

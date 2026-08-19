@@ -20,7 +20,7 @@ from typing import Any
 from ..audit import AuditEvent, AuditRecord, AuditSink, StructuredLogAuditSink
 from ..cache.base import CacheProvider
 from ..config import Settings, get_settings
-from ..domain.enums import Marketplace, RejectionReason
+from ..domain.enums import Marketplace, RejectionReason, UseCase
 from ..domain.money import Money
 from ..domain.product import Offer, Product, ProductCandidate
 from ..domain.recommendation import Recommendation, RunnerUp, TradeOff
@@ -187,7 +187,12 @@ class AgentNodes:
             text = state.get("user_request", "")
 
             try:
-                extraction, stats = self.reasoner.extract_requirements(text)
+                # The session's existing requirements go in as context, so a
+                # terse follow-up ("2 Lakhs budget") is read as an answer rather
+                # than as a whole new request.
+                extraction, stats = self.reasoner.extract_requirements(
+                    text, known=state.get("requirements")
+                )
             except StructuredOutputError as exc:
                 # Retries are exhausted. Fail gracefully — never parse free text.
                 self.audit.record(
@@ -668,7 +673,10 @@ class AgentNodes:
                 trade_offs=trade_offs,
                 runner_ups=runner_up_models,
                 near_budget_alternatives=near_budget,
-                warnings=list(winner.price.warnings),
+                warnings=[
+                    *unmet_preferences(winner.product, requirements),
+                    *winner.price.warnings,
+                ],
             )
             return {"recommendation": recommendation}
 
@@ -778,6 +786,97 @@ class AgentNodes:
 # ---------------------------------------------------------------------------
 
 
+#: What "the user did not tell us" looks like, per field.
+#:
+#: This map is the fix for a real defect. The merge previously treated only
+#: ``None``, ``[]`` and ``"any"`` as unset — but ``UseCase.GENERAL`` and ``False``
+#: are *also* defaults meaning "not specified", so a follow-up turn like
+#: "2 Lakhs budget" extracted ``use_case=GENERAL, dedicated_gpu_required=False``
+#: and those defaults overwrote the gaming and GPU requirements gathered on the
+#: first turn. The agent then searched for a generic laptop and recommended a
+#: 2012-era machine for an AI/ML request.
+_UNSET_BY_FIELD: dict[str, object] = {
+    "use_case": UseCase.GENERAL,
+    "storage_type": "any",
+    "required_os": "any",
+    "dedicated_gpu_required": False,
+    "touchscreen_required": False,
+    "preferred_brands": [],
+    "excluded_brands": [],
+    "mandatory_fields": [],
+}
+
+
+def _is_unset(field: str, value: object) -> bool:
+    """Whether ``value`` carries no information for ``field``."""
+    if value is None:
+        return True
+    sentinel = _UNSET_BY_FIELD.get(field)
+    if sentinel is None:
+        return False
+    # StrEnum compares equal to its value, so GENERAL == "general" holds.
+    return value == sentinel
+
+
+#: Preferences worth reporting when the winner misses them, with how to phrase it.
+_PREFERENCE_LABELS: dict[str, str] = {
+    "max_weight_kg": "under {want} kg (this one is {got} kg)",
+    "min_battery_hours": "at least {want} hours of battery (this one states {got})",
+    "min_screen_inches": "at least {want} inches (this one is {got})",
+    "max_screen_inches": "no larger than {want} inches (this one is {got})",
+    "min_ram_gb": "at least {want} GB of RAM (this one has {got})",
+    "min_storage_gb": "at least {want} GB of storage (this one has {got})",
+}
+
+
+def unmet_preferences(product: Product, requirements: LaptopRequirements) -> list[str]:
+    """Preferences the winner does not satisfy, phrased for the user.
+
+    Only *non-mandatory* ones — a mandatory miss disqualifies the candidate
+    outright. These are the soft asks that lost a trade-off, and saying so is the
+    difference between a recommendation and an unexplained one. Asking for a slim
+    1.5 kg machine *and* a gaming GPU is close to contradictory; the agent should
+    name which half it could not honour rather than quietly dropping it.
+    """
+    specs = product.specs
+    checks: list[tuple[str, object, object, bool]] = [
+        ("max_weight_kg", requirements.max_weight_kg, specs.weight_kg,
+         specs.weight_kg is not None
+         and requirements.max_weight_kg is not None
+         and specs.weight_kg > requirements.max_weight_kg),
+        ("min_battery_hours", requirements.min_battery_hours, specs.battery_hours,
+         specs.battery_hours is not None
+         and requirements.min_battery_hours is not None
+         and specs.battery_hours < requirements.min_battery_hours),
+        ("min_screen_inches", requirements.min_screen_inches, specs.screen_inches,
+         specs.screen_inches is not None
+         and requirements.min_screen_inches is not None
+         and specs.screen_inches < requirements.min_screen_inches),
+        ("max_screen_inches", requirements.max_screen_inches, specs.screen_inches,
+         specs.screen_inches is not None
+         and requirements.max_screen_inches is not None
+         and specs.screen_inches > requirements.max_screen_inches),
+        ("min_ram_gb", requirements.min_ram_gb, specs.ram_gb,
+         specs.ram_gb is not None
+         and requirements.min_ram_gb is not None
+         and specs.ram_gb < requirements.min_ram_gb),
+        ("min_storage_gb", requirements.min_storage_gb, specs.storage_gb,
+         specs.storage_gb is not None
+         and requirements.min_storage_gb is not None
+         and specs.storage_gb < requirements.min_storage_gb),
+    ]
+
+    missed: list[str] = []
+    for field, want, got, is_missed in checks:
+        if field in requirements.mandatory_fields:
+            continue  # a mandatory miss would have disqualified this candidate
+        if is_missed:
+            missed.append(
+                "You asked for " + _PREFERENCE_LABELS[field].format(want=want, got=got) + "."
+            )
+    return missed
+
+
 def _to_requirements(
     extraction: Any, previous: LaptopRequirements | None
 ) -> LaptopRequirements:
@@ -813,8 +912,8 @@ def _to_requirements(
     if previous is not None:
         merged = previous.model_dump()
         for key, value in data.items():
-            if value in (None, [], "any") and merged.get(key) not in (None, [], "any"):
-                continue  # keep what we already knew
+            if _is_unset(key, value) and not _is_unset(key, merged.get(key)):
+                continue  # a default must never erase something already known
             if value is None:
                 continue
             merged[key] = value
