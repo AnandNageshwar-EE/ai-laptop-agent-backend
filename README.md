@@ -264,6 +264,54 @@ docker compose up --build          # backend on :8000, frontend on :8501
 The `frontend` service expects the frontend repository checked out as a sibling
 directory. Comment it out to run the backend alone.
 
+## Evaluation
+
+Distinct from the test suite, and the distinction matters. Tests assert the code
+behaves correctly on fixed inputs. Evaluation asks whether the agent's *output*
+holds its invariants across a realistic spread of requests, and lets two prompt or
+model versions be compared on identical ground.
+
+```bash
+python -m laptop_agent.evals.run                      # 31 cases, offline, free
+python -m laptop_agent.evals.run --only adversarial   # 14 attack rows only
+python -m laptop_agent.evals.run --live               # exercise the real model
+python -m laptop_agent.evals.run --langsmith          # record an experiment
+```
+
+**Marketplace data is pinned to fixtures in every mode.** Live listings would make
+two runs incomparable — a "regression" could just be a price change — and the
+point of an experiment is that the prompt or the model is the only variable.
+
+**Expectations are invariants, not exact answers.** "Must recommend the ASUS
+Vivobook" breaks the moment the fixture set changes; "must not exceed the stated
+budget" holds forever, and is the property a user actually cares about.
+
+31 cases: 11 recommendation, 3 clarification, 3 no-result, 14 adversarial.
+Twelve evaluators, eleven of them release-blocking:
+
+| Evaluator | Catches |
+|---|---|
+| `outcome_matches` | Recommended when it should have asked, refused, or declined |
+| `budget_respected` | Effective price above the stated ceiling |
+| `mandatory_specs_met` | Hard requirement unmet — and *unknown* counts as unmet |
+| `price_arithmetic_closes` | listed − savings ≠ paid |
+| `cashback_not_deducted` | Cashback folded into the checkout price |
+| `url_provenance` | Link off-platform, or not the claimed marketplace |
+| `no_invented_money_in_prose` | Any figure or percentage in model-authored text |
+| `forbidden_product_excluded` | A disqualified listing surfacing as winner or runner-up |
+| `refusal_leaks_nothing` | Refusal describing the filter to whoever probed it |
+| `refusal_spends_nothing` | An attack costing a model call or a marketplace fetch |
+| `clarification_is_safe` | Asking for payment or identity data |
+| `validation_passed_first_try` | *(signal)* Ranking and validation drifting apart |
+
+Inapplicable checks are **skipped, not passed** — scoring a vacuous success would
+inflate the rate. `tests/test_evals.py` feeds each evaluator a deliberately bad
+reply, because an evaluator that always passes manufactures confidence.
+
+Not built: an LLM-as-judge layer for the subjective part (rationale relevance,
+trade-off honesty). It costs money per run and is the least reliable of the three
+layers, so the deterministic checks came first.
+
 ## Testing the guardrails
 
 Three levels, deliberately independent.

@@ -19,15 +19,33 @@ from ..domain.money import Money
 
 #: Currency-marked amounts: ₹79,999 / Rs. 79999 / INR 79,999.00 / $1,299
 _CURRENCY_AMOUNT = re.compile(
-    r"(?i)(?:₹|\brs\.?\b|\binr\b|\$|\busd\b)\s*([\d,]+(?:\.\d{1,2})?)"
-    r"|([\d,]+(?:\.\d{1,2})?)\s*(?:₹|\brs\.?\b|\binr\b|\brupees?\b|\bdollars?\b)"
+    # No \b after "rs\.?" — with the dot present the boundary sits between "."
+    # and a space, both non-word characters, so it can never match and "Rs. 48,999"
+    # slipped through entirely. The leading \b is what prevents matching inside a
+    # longer word.
+    r"(?i)(?:₹|\brs\.?|\binr\b|\$|\busd\b)\s*([\d,]+(?:\.\d{1,2})?)"
+    r"|([\d,]+(?:\.\d{1,2})?)\s*(?:₹|\brs\.?|\binr\b|\brupees?\b|\bdollars?\b)"
 )
 
 #: Indian-notation amounts: "80k", "1.5 lakh", "1,20,000"
 _SCALED_AMOUNT = re.compile(r"(?i)\b(\d+(?:\.\d+)?)\s*(k|lakh|lac|crore)\b")
 
-#: Percentages: "20% off", "saves 15 percent"
-_PERCENTAGE = re.compile(r"(?i)\b(\d{1,3}(?:\.\d+)?)\s*(?:%|percent)\b")
+#: Percentages: "20% off", "saves 15 percent".
+#:
+#: The word boundary belongs *after* "percent" only. A trailing \b following "%"
+#: can never match — "%" is a non-word character and so is the space after it —
+#: which meant "Save 20% off" passed through this screen entirely unstripped
+#: while "15 percent" was caught.
+_PERCENTAGE = re.compile(r"(?i)\b(\d{1,3}(?:\.\d+)?)\s*(?:%|percent\b)")
+
+#: Percentages that are display specifications, not discounts. A colour-gamut
+#: figure is a genuine product fact, so stripping it would degrade a correct
+#: explanation rather than protect anyone.
+_PERCENT_SPEC = re.compile(
+    r"(?i)\b\d{1,3}(?:\.\d+)?\s*%\s*"
+    r"(?:s\s?rgb|dci[- ]?p3|adobe\s*rgb|ntsc|rec\.?\s*709|"
+    r"screen[- ]to[- ]body|brightness|colou?r\s+(?:gamut|accuracy))"
+)
 
 #: Figures that are specifications, not prices. Matched first and exempted, so
 #: "16GB RAM" and "14 inch" are never mistaken for monetary claims.
@@ -80,6 +98,7 @@ def screen_price_claims(text: str, allowed: list[Money]) -> PriceClaimReport:
 
     removed: list[str] = []
     spec_spans = [match.span() for match in _SPEC_CONTEXT.finditer(text)]
+    spec_spans += [match.span() for match in _PERCENT_SPEC.finditer(text)]
 
     def _in_spec_context(start: int, end: int) -> bool:
         return any(s <= start and end <= e for s, e in spec_spans)
@@ -108,10 +127,16 @@ def screen_price_claims(text: str, allowed: list[Money]) -> PriceClaimReport:
         return "the listed price"
 
     def _replace_percent(match: re.Match[str]) -> str:
-        # Percentages are never authorised in prose: the deterministic layer
-        # renders every discount figure itself.
+        """Remove a discount percentage entirely.
+
+        Substituting a phrase produced sentences like "A a discount discount
+        applies." Deleting the figure and letting the whitespace collapse leaves
+        "A discount applies." — which is both accurate and readable.
+        """
+        if _in_spec_context(*match.span()):
+            return match.group(0)
         removed.append(match.group(0).strip())
-        return "a discount"
+        return ""
 
     screened = _CURRENCY_AMOUNT.sub(_replace_currency, text)
     screened = _SCALED_AMOUNT.sub(_replace_scaled, screened)
