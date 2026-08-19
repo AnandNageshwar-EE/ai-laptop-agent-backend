@@ -126,3 +126,91 @@ def test_purchase_profile_cannot_hold_a_card_number():
     # And unexpected fields are refused outright.
     with pytest.raises(Exception):
         PurchaseProfile(card_number="4111111111111111")
+
+
+# ---------------------------------------------------------------------------
+# Regression: real key shapes, not synthetic ones.
+#
+# The original patterns were tested against invented keys with no internal
+# underscore, and passed. A real LangSmith key is
+# lsv2_pt_<32 hex>_<10 hex> — and because "_" is a word character, the trailing
+# \b never matched after the first segment, so the ENTIRE key was emitted
+# unmasked. The same flaw hid a second bug: \b before "api_key" does not match
+# inside "LANGSMITH_API_KEY", so the key=value rule missed it too.
+#
+# Keys below are structurally identical to real ones but not real.
+# ---------------------------------------------------------------------------
+
+# Non-hex filler on purpose. The property under test is the *internal
+# underscore* and the segment lengths, not the alphabet — and hex-shaped
+# fixtures are realistic enough that GitHub push protection classifies them as
+# live credentials and refuses the push. Keeping them obviously synthetic tests
+# the same bug without tripping a scanner or teaching anyone to click through it.
+_LS_SEG_A = "notARealKeyNotARealKeyNotARealK"
+_LS_SEG_B = "synthetic1"
+
+REALISTIC_KEYS = [
+    # LangSmith: two underscore-separated segments after the prefix.
+    f"lsv2_pt_{_LS_SEG_A}_{_LS_SEG_B}",
+    f"lsv2_sk_{_LS_SEG_A}_{_LS_SEG_B}",
+    # OpenRouter: hyphenated prefix then a long hex run.
+    "sk-or-v1-" + "9f8e7d6c" * 8,
+    # Anthropic.
+    "sk-ant-api03-" + "AbCdEfGh" * 4,
+    # SerpApi: bare 64-char hex with no prefix at all.
+    # (Caught by the literal list from Settings, not by shape — see below.)
+]
+
+
+@pytest.mark.parametrize("key", REALISTIC_KEYS)
+def test_realistic_key_shapes_are_fully_masked(redactor, key):
+    for template in ("{k}", "key is {k} ok", "LANGSMITH_API_KEY={k}", '"api_key": "{k}"'):
+        out = redactor.redact_text(template.format(k=key))
+        assert key not in out, f"whole key survived in {template!r}"
+        # No fragment longer than the prefix may survive either.
+        for fragment in key.replace("-", "_").split("_"):
+            if len(fragment) >= 8:
+                assert fragment not in out, f"fragment {fragment!r} survived in {template!r}"
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "LANGSMITH_API_KEY",
+        "OPENROUTER_API_KEY",
+        "ANTHROPIC_API_KEY",
+        "AWS_SECRET_ACCESS_KEY",
+        "x-api-key",
+        "X_API_TOKEN",
+        "db_password",
+    ],
+)
+def test_prefixed_env_var_names_are_matched(redactor, name):
+    """A bare \\b before "api_key" never matches inside "LANGSMITH_API_KEY"."""
+    out = redactor.redact_text(f"{name}=s3cr3tvalue123456")
+    assert "s3cr3tvalue123456" not in out
+
+
+def test_bare_hex_secret_is_masked_via_configured_literals():
+    """A 64-char hex SerpApi key has no distinguishing shape.
+
+    Shape-based patterns cannot catch it without also masking order numbers and
+    hashes, so it is covered by seeding the redactor with the process's own
+    configured secrets instead.
+    """
+    from laptop_agent.security.redaction import SecretRedactor
+
+    key = "5785e8f0" * 8
+    assert key not in SecretRedactor(extra_literals=[key]).redact_text(f"SERPAPI_KEY={key}")
+    # And the key=value rule catches it even without the literal.
+    assert key not in SecretRedactor().redact_text(f"SERPAPI_KEY={key}")
+
+
+def test_legitimate_text_survives_the_broadened_patterns(redactor):
+    """The widened name pattern must not start eating ordinary prose."""
+    for text in (
+        "I want 16GB RAM and 512GB SSD under 80000 rupees",
+        "the token bucket rate limiter allows 20 requests",
+        "my budget is 80000",
+    ):
+        assert redactor.redact_text(text) == text

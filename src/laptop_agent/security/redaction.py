@@ -69,8 +69,13 @@ _PATTERNS: Final[tuple[tuple[str, re.Pattern[str], str], ...]] = (
     ("openrouter_key", re.compile(r"sk-or-v1-[A-Za-z0-9]{16,}"), MASK),
     # OpenAI-style keys (may appear in pasted user text)
     ("generic_sk_key", re.compile(r"\bsk-[A-Za-z0-9]{20,}\b"), MASK),
-    # LangSmith keys
-    ("langsmith_key", re.compile(r"\blsv2_(?:pt|sk)_[A-Za-z0-9]{16,}\b"), MASK),
+    # LangSmith keys.
+    #
+    # No trailing \b, and underscores are part of the token class: a real key is
+    # lsv2_pt_<32 hex>_<10 hex>, and "_" is a word character, so a trailing \b
+    # never matches after the first segment. The original pattern left the whole
+    # key visible.
+    ("langsmith_key", re.compile(r"lsv2_(?:pt|sk)_[A-Za-z0-9_]{16,}"), MASK),
     # AWS access key id / secret
     ("aws_access_key_id", re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b"), MASK),
     (
@@ -88,12 +93,18 @@ _PATTERNS: Final[tuple[tuple[str, re.Pattern[str], str], ...]] = (
     ),
     # Authorization headers
     ("bearer", re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._\-/+=]{12,}"), f"Bearer {MASK}"),
-    # key=value / key: value assignments for sensitive names
+    # key=value / key: value assignments for sensitive names.
+    #
+    # The name may carry a prefix or a suffix — LANGSMITH_API_KEY, X-Api-Key,
+    # AWS_SECRET_ACCESS_KEY (sensitive word in the middle), db_password_hint.
+    # "_" is a word character, so a bare \b before "api_key" does not match
+    # inside "LANGSMITH_API_KEY"; the leading [\w.-]* is what makes prefixed
+    # environment-variable names match.
     (
         "assigned_secret",
         re.compile(
-            r"(?i)\b(api[_-]?key|secret|password|passwd|token|cvv|cvc|otp|pin)\b"
-            r"\s*[:=]\s*['\"]?[^\s'\",;]{3,}['\"]?"
+            r"(?i)\b([\w.-]*(?:api[_-]?key|secret|password|passwd|token|cvv|cvc|otp|pin)"
+            r"[\w.-]*)\s*[:=]\s*['\"]?[^\s'\",;]{3,}['\"]?"
         ),
         r"\1=" + MASK,
     ),
