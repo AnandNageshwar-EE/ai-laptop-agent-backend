@@ -19,7 +19,7 @@ uv venv --python 3.12 .venv
 uv pip install --python .venv/bin/python -e ".[dev]"
 cp .env.example .env
 
-.venv/bin/python -m pytest -q                 # 228 tests, all offline
+.venv/bin/python -m pytest -q                 # 340 tests, all offline
 .venv/bin/python -m uvicorn laptop_agent.api.main:app --reload
 ```
 
@@ -83,7 +83,17 @@ delist a rival by poisoning its description.
 
 **Deterministic where determinism matters.** Guardrails, pricing and ranking are
 pure functions. The model extracts requirements and writes prose; it does not
-decide, price or rank.
+decide, price or rank. Ranking is at `SCORING_VERSION = "v2"` — GPU strength is
+graded by model tier and VRAM rather than treated as a boolean, and budget
+headroom no longer rewards under-spending on a capability-driven request.
+
+**A stated budget is a ceiling, but not a blindfold.** Options up to 10% over
+(`NEAR_BUDGET_TOLERANCE`) whose *only* failure is the budget are surfaced
+separately and clearly marked. They are never recommended.
+
+**Unmet soft preferences are stated.** Asking for a 1.5 kg machine *and* a gaming
+GPU is near-contradictory; the agent names which half it could not honour rather
+than silently dropping one.
 
 ## Layout
 
@@ -95,7 +105,8 @@ src/laptop_agent/
 ├── guardrails/        Nine independent layers  → docs/GUARDRAILS.md
 ├── prompts/           Versioned, stable prefixes → docs/PROMPT_CACHING.md
 ├── llm/               Schemas, structured invocation, offline reasoner
-├── marketplace/       Clients (own their base URLs) + fixtures
+├── marketplace/       Clients, SerpApi transport, spec parser, fixtures
+├── evals/             Golden dataset + deterministic evaluators
 ├── pricing/           Deterministic candidate assembly
 ├── ranking/           Deterministic, reproducible scoring
 ├── observability/     LangSmith tracing + per-run metrics
@@ -319,7 +330,7 @@ Three levels, deliberately independent.
 **1. Unit tests — each layer in isolation, offline**
 
 ```bash
-.venv/bin/python -m pytest -q                                 # all 267
+.venv/bin/python -m pytest -q                                 # all 340
 .venv/bin/python -m pytest tests/test_input_guardrails.py -v   # 38 input cases
 .venv/bin/python -m pytest tests/test_price_validator.py -v     # 20 price rules
 .venv/bin/python -m pytest tests/test_recommendation_validator.py -v  # 15 tampering attacks
@@ -387,7 +398,7 @@ per turn.
 ## Tests
 
 ```bash
-.venv/bin/python -m pytest -q                                   # all 228
+.venv/bin/python -m pytest -q                                   # all 340
 .venv/bin/python -m pytest tests/test_recommendation_validator.py -v
 ```
 
