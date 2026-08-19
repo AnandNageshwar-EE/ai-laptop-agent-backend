@@ -142,6 +142,10 @@ class HealthResponse(BaseModel):
     model: str
     tracing_enabled: bool
     prompt_cache_enabled: bool
+    #: True only when the configured route can cache tokens server-side. A
+    #: ":free" open-weight model cannot, and saying otherwise would imply token
+    #: savings that are not happening.
+    provider_prompt_caching: bool
     prompt_prefix_fingerprint: str
     marketplaces: list[str]
     #: "serpapi" for live listings, "fixtures" for the bundled simulated data.

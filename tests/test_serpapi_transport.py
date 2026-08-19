@@ -332,3 +332,132 @@ def test_no_outbound_http_during_a_full_agent_run(monkeypatch):
         message="laptop for software development under 80000 with 16GB RAM"
     )
     assert reply.recommendation is not None
+
+
+# ---------------------------------------------------------------------------
+# Provider routing. OpenRouter is OpenAI-shaped, so the usage fields and the
+# caching guarantees differ from the native Anthropic path.
+# ---------------------------------------------------------------------------
+
+
+def test_openrouter_reports_caching_only_for_models_that_can_cache():
+    from laptop_agent.config import Settings
+
+    cacheable = Settings(
+        llm_mode="live", llm_provider="openrouter",
+        openrouter_model="anthropic/claude-opus-5", openrouter_api_key="k" * 20,
+    )
+    assert cacheable.provider_prompt_caching_supported
+
+    free = Settings(
+        llm_mode="live", llm_provider="openrouter",
+        openrouter_model="meta-llama/llama-3.3-70b-instruct:free",
+        openrouter_api_key="k" * 20,
+    )
+    # A free open-weight model has no server-side prompt cache. Reporting
+    # otherwise would imply token savings that are not happening.
+    assert not free.provider_prompt_caching_supported
+
+
+def test_offline_mode_never_claims_provider_caching():
+    from laptop_agent.config import Settings
+
+    assert not Settings(llm_mode="offline").provider_prompt_caching_supported
+
+
+def test_traced_model_name_reflects_the_openrouter_slug():
+    from laptop_agent.config import Settings
+
+    settings = Settings(
+        llm_mode="live", llm_provider="openrouter",
+        openrouter_model="anthropic/claude-opus-5", openrouter_api_key="k" * 20,
+    )
+    assert settings.traced_model_name == "anthropic/claude-opus-5"
+    assert settings.base_trace_metadata()["provider_prompt_caching"] == "true"
+
+
+def test_openrouter_requires_a_key():
+    from laptop_agent.config import Settings
+    from laptop_agent.llm.provider import LLMUnavailableError, build_chat_model
+
+    with pytest.raises(LLMUnavailableError):
+        build_chat_model(
+            Settings(llm_mode="live", llm_provider="openrouter", openrouter_api_key=None)
+        )
+
+
+def test_openrouter_usage_fields_are_parsed():
+    """OpenRouter names cache counters differently from Anthropic.
+
+    Without handling prompt_tokens_details.cached_tokens the cache would appear
+    to never hit, and the whole point of the stable prefix would be unverifiable.
+    """
+    from laptop_agent.llm.structured import InvocationStats, StructuredLLM
+
+    class FakeResponse:
+        usage_metadata: dict = {}
+        response_metadata = {
+            "token_usage": {
+                "prompt_tokens": 1800,
+                "completion_tokens": 210,
+                "prompt_tokens_details": {"cached_tokens": 1665},
+                "cache_write_tokens": 0,
+            }
+        }
+
+    stats = InvocationStats(schema="RequirementExtraction")
+    StructuredLLM._record_usage(stats, FakeResponse())
+    assert stats.cache_read_tokens == 1665
+    assert stats.input_tokens == 1800
+    assert stats.output_tokens == 210
+    assert stats.cache_hit
+
+
+def test_anthropic_native_usage_fields_still_parsed():
+    from laptop_agent.llm.structured import InvocationStats, StructuredLLM
+
+    class FakeResponse:
+        usage_metadata = {
+            "input_tokens": 1700,
+            "output_tokens": 200,
+            "input_token_details": {"cache_read": 1650, "cache_creation": 0},
+        }
+        response_metadata: dict = {}
+
+    stats = InvocationStats(schema="RequirementExtraction")
+    StructuredLLM._record_usage(stats, FakeResponse())
+    assert stats.cache_read_tokens == 1650
+    assert stats.input_tokens == 1700
+
+
+def test_openrouter_key_shape_is_redacted():
+    from laptop_agent.security.redaction import SecretRedactor
+
+    key = "sk-or-v1-" + "a1b2c3d4" * 8
+    assert key not in SecretRedactor().redact_text(f"OPENROUTER_API_KEY={key}")
+
+
+def test_gateway_providers_try_tool_calling_first():
+    """Routed through OpenRouter, response_format is not strictly enforced.
+
+    Observed with anthropic/claude-opus-5 via OpenRouter: the json_schema
+    attempt returned an invented shape (budget:extra_forbidden,
+    trade_offs.0:model_type) and only the tool-calling retry succeeded. Putting
+    tool-calling first removes a guaranteed wasted round trip.
+    """
+    from laptop_agent.llm.structured import strategies_for
+
+    assert strategies_for("openrouter")[0] == "function_calling"
+    assert strategies_for("anthropic")[0] == "json_schema"
+
+
+def test_runner_up_note_cap_matches_what_the_node_sends():
+    """A schema cap below the payload size rejects a correct response."""
+    from laptop_agent.domain.recommendation import Recommendation
+    from laptop_agent.llm.schemas import RecommendationExplanation
+
+    notes = RecommendationExplanation.model_fields["runner_up_notes"].metadata
+    runners = Recommendation.model_fields["runner_ups"].metadata
+    cap = next(m.max_length for m in notes if hasattr(m, "max_length"))
+    sent = next(m.max_length for m in runners if hasattr(m, "max_length"))
+    assert cap >= sent, f"schema caps notes at {cap} but up to {sent} runner-ups are sent"

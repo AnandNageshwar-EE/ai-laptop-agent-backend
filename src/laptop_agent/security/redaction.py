@@ -27,6 +27,8 @@ SENSITIVE_KEYS: Final[frozenset[str]] = frozenset(
         "apikey",
         "anthropic_api_key",
         "langsmith_api_key",
+        "openrouter_api_key",
+        "serpapi_key",
         "authorization",
         "auth",
         "token",
@@ -62,6 +64,9 @@ SENSITIVE_KEYS: Final[frozenset[str]] = frozenset(
 _PATTERNS: Final[tuple[tuple[str, re.Pattern[str], str], ...]] = (
     # Anthropic keys
     ("anthropic_key", re.compile(r"sk-ant-[A-Za-z0-9_\-]{16,}"), MASK),
+    # OpenRouter keys — matched before the generic sk- rule, which would
+    # otherwise stop at the first hyphen and leave most of the key visible.
+    ("openrouter_key", re.compile(r"sk-or-v1-[A-Za-z0-9]{16,}"), MASK),
     # OpenAI-style keys (may appear in pasted user text)
     ("generic_sk_key", re.compile(r"\bsk-[A-Za-z0-9]{20,}\b"), MASK),
     # LangSmith keys
@@ -209,7 +214,12 @@ def build_redactor() -> SecretRedactor:
     settings = get_settings()
     literals = [
         secret.get_secret_value()
-        for secret in (settings.anthropic_api_key, settings.langsmith_api_key)
+        for secret in (
+            settings.anthropic_api_key,
+            settings.langsmith_api_key,
+            settings.openrouter_api_key,
+            settings.serpapi_key,
+        )
         if secret is not None
     ]
     return SecretRedactor(extra_literals=literals)

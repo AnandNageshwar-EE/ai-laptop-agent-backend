@@ -38,6 +38,8 @@ def build_chat_model(settings: Settings | None = None) -> Any:
         return _build_anthropic(resolved)
     if resolved.llm_provider == "bedrock":
         return _build_bedrock(resolved)
+    if resolved.llm_provider == "openrouter":
+        return _build_openrouter(resolved)
     raise LLMUnavailableError(f"unsupported llm_provider: {resolved.llm_provider!r}")
 
 
@@ -85,6 +87,50 @@ def _build_bedrock(settings: Settings) -> Any:
         model=f"anthropic.{settings.llm_model}",
         region_name=settings.aws_region,
         max_tokens=settings.llm_max_tokens,
+    )
+
+
+def _build_openrouter(settings: Settings) -> Any:
+    """OpenRouter, an OpenAI-compatible gateway.
+
+    OpenRouter exposes **only** the OpenAI chat-completions schema — there is no
+    Anthropic-native ``/v1/messages`` endpoint — so this path uses ``ChatOpenAI``
+    with an overridden base URL rather than ``ChatAnthropic``.
+
+    Prompt caching still works for models whose upstream provider supports it
+    (Anthropic, Gemini, OpenAI): the ``cache_control`` markers this application
+    already puts on its system blocks are forwarded. Models that cannot cache
+    ignore the markers harmlessly, and
+    :attr:`Settings.provider_prompt_caching_supported` reports that honestly
+    instead of implying tokens are being saved.
+    """
+    try:
+        from langchain_openai import ChatOpenAI
+    except ImportError as exc:
+        raise LLMUnavailableError(
+            "llm_provider='openrouter' requires the langchain-openai package."
+        ) from exc
+
+    if settings.openrouter_api_key is None:
+        raise LLMUnavailableError(
+            "OPENROUTER_API_KEY is not set; set it or set LLM_MODE=offline"
+        )
+
+    return ChatOpenAI(
+        model=settings.openrouter_model,
+        api_key=settings.openrouter_api_key,
+        base_url=settings.openrouter_base_url,
+        max_tokens=settings.llm_max_tokens,
+        timeout=settings.llm_timeout_seconds,
+        # Retries are owned by the structured-output layer so a retry is visible
+        # in the trace rather than hidden in the client.
+        max_retries=0,
+        default_headers={
+            "HTTP-Referer": settings.openrouter_site_url,
+            "X-Title": settings.openrouter_app_name,
+        },
+        # Ask OpenRouter to report cache accounting back to us.
+        extra_body={"usage": {"include": True}},
     )
 
 

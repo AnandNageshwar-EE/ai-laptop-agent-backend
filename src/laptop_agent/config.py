@@ -13,7 +13,7 @@ from typing import Literal
 from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-LLMProvider = Literal["anthropic", "bedrock"]
+LLMProvider = Literal["anthropic", "bedrock", "openrouter"]
 LLMMode = Literal["live", "offline"]
 #: Where marketplace listings come from. ``fixtures`` needs no credentials and
 #: runs offline; ``serpapi`` fetches live listings and real prices.
@@ -59,6 +59,16 @@ class Settings(BaseSettings):
 
     anthropic_api_key: SecretStr | None = None
     aws_region: str = "us-east-1"
+
+    # ----- OpenRouter (OpenAI-compatible gateway) -----
+    openrouter_api_key: SecretStr | None = None
+    openrouter_base_url: str = "https://openrouter.ai/api/v1"
+    #: OpenRouter model slug, e.g. "anthropic/claude-sonnet-5" (caching works)
+    #: or a ":free" open-weight model (no provider-side caching).
+    openrouter_model: str = "anthropic/claude-sonnet-5"
+    #: Sent as HTTP-Referer / X-Title so usage is attributable in the dashboard.
+    openrouter_site_url: str = "https://github.com/AnandNageshwar-EE/ai-laptop-agent-backend"
+    openrouter_app_name: str = "ai-laptop-agent"
 
     # ----- marketplace data source -----
     marketplace_source: MarketplaceSource = "fixtures"
@@ -124,7 +134,30 @@ class Settings(BaseSettings):
 
     @property
     def traced_model_name(self) -> str:
-        return self.llm_model if self.llm_mode == "live" else "offline-deterministic"
+        if self.llm_mode != "live":
+            return "offline-deterministic"
+        if self.llm_provider == "openrouter":
+            return self.openrouter_model
+        return self.llm_model
+
+    @property
+    def provider_prompt_caching_supported(self) -> bool:
+        """Whether the configured route can actually cache tokens server-side.
+
+        Reported honestly rather than assumed. A ``:free`` open-weight model on
+        OpenRouter has no prompt cache, so claiming caching is enabled would
+        misrepresent what the application is doing — the local assembly cache
+        saves microseconds, not tokens.
+        """
+        if self.llm_mode != "live":
+            return False
+        if self.llm_provider == "openrouter":
+            model = self.openrouter_model.lower()
+            if model.endswith(":free"):
+                return False
+            # OpenRouter honours cache_control for Anthropic and Gemini models.
+            return model.startswith(("anthropic/", "google/", "openai/", "deepseek/"))
+        return True
 
     def base_trace_metadata(self) -> dict[str, str]:
         """Static metadata attached to every LangSmith run (spec section 4.1)."""
@@ -135,6 +168,7 @@ class Settings(BaseSettings):
             "model": self.traced_model_name,
             "llm_provider": self.llm_provider,
             "marketplace_source": self.effective_marketplace_source,
+            "provider_prompt_caching": str(self.provider_prompt_caching_supported).lower(),
         }
 
     def base_trace_tags(self) -> list[str]:

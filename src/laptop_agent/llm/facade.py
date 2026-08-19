@@ -50,8 +50,12 @@ class Reasoner:
                 from .provider import build_chat_model
 
                 model = build_chat_model(self._settings)
+            from .structured import strategies_for
+
             self._structured = StructuredLLM(
-                model, max_retries=self._settings.llm_structured_retries
+                model,
+                max_retries=self._settings.llm_structured_retries,
+                strategies=strategies_for(self._settings.llm_provider),
             )
 
     @property

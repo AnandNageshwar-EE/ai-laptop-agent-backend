@@ -172,6 +172,74 @@ are exercised by the default demo rather than only by tests:
 
 A default run quarantines 4 listings and 2 offers, and flags 1 injection attempt.
 
+## LLM providers and what they cost
+
+`LLM_MODE=offline` (default) calls no model at all: `llm/offline.py` is a
+deterministic rule-based reasoner producing the same schemas, so the whole
+pipeline runs for free with no key. `LLM_MODE=live` routes through
+`LLM_PROVIDER`:
+
+| Provider | Endpoint shape | Prompt caching | Notes |
+|---|---|---|---|
+| `anthropic` | Anthropic Messages API | Native `cache_control` | Exact usage fields |
+| `openrouter` | OpenAI chat-completions | Works for `anthropic/*`, `google/*`, `openai/*` | One key, many models |
+| `bedrock` | Bedrock Converse | Provider-dependent | Needs `langchain-aws` |
+
+OpenRouter is **OpenAI-compatible only** — there is no Anthropic-native
+`/v1/messages` endpoint — so that path uses `ChatOpenAI` with an overridden base
+URL. Two consequences that are handled rather than assumed:
+
+- **Cache counters are named differently.** OpenRouter reports
+  `prompt_tokens_details.cached_tokens`, not Anthropic's
+  `input_token_details.cache_read`. Both shapes are parsed; without that the
+  cache would appear to never hit and the stable prefix would be unverifiable.
+- **`response_format: json_schema` is forwarded but not strictly enforced.**
+  Measured against `anthropic/claude-opus-5` via OpenRouter, the json_schema
+  attempt returned an invented shape (`budget:extra_forbidden`,
+  `trade_offs.0:model_type`) and only the tool-calling retry succeeded. So
+  gateway providers try **tool-calling first** (`strategies_for()`), which
+  removes a guaranteed wasted round trip.
+
+A `:free` model costs nothing but has no server-side prompt cache and follows
+JSON schemas less reliably. `GET /health` reports
+`provider_prompt_caching: false` in that case rather than implying token savings
+that are not happening.
+
+### Measured cost
+
+Not estimated — measured over live runs with `anthropic/claude-opus-5` through
+OpenRouter, at $5/MTok input, $25/MTok output, $0.50/MTok cache read:
+
+| | Per query (2 LLM calls) |
+|---|---|
+| Input | ~10,300 tok, of which ~6,800 served from cache |
+| Output | ~1,250 tok |
+| **Cost** | **~$0.05–0.10** |
+
+**Output dominates at ~60% of spend**, because Opus 5 runs adaptive thinking and
+reasoning tokens bill at the output rate. Levers, in order of effect:
+
+1. `OPENROUTER_MODEL=anthropic/claude-sonnet-5` — $2/$10 per MTok, roughly 2.5×
+   cheaper, and noticeably faster.
+2. Send fewer runner-ups to the explanation call. Each candidate costs ~257
+   input tokens, so 5 runner-ups is ~1,300 tokens of the fresh input.
+3. Prompt caching already removes ~66% of input tokens from full price; the
+   stable-prefix work is what makes that hold.
+
+Latency is 19–23 s per query on Opus 5 (two sequential calls, adaptive thinking).
+Sonnet 5 is materially quicker.
+
+### What live mode actually changes
+
+The model handles vague-language interpretation ("something light", "won't die on
+me") and writes better explanation prose. It does **not** touch prices, ranking
+or the selection — those stay deterministic, and the recommendation validator
+would reject its output if it tried. One consequence worth knowing: because
+requirement *extraction* is the only nondeterministic step, an identical query
+can yield a different winner between runs when the request contains fuzzy
+language, since a slightly different extracted constraint changes which
+candidates qualify. Offline mode is byte-identical run to run.
+
 ## Documentation
 
 - [docs/GUARDRAILS.md](docs/GUARDRAILS.md) — the nine layers, what each prevents

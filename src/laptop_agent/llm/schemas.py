@@ -145,7 +145,10 @@ class RecommendationExplanation(BaseModel):
 
     rationale: Annotated[str, Field(min_length=10, max_length=1200)]
     trade_offs: Annotated[list[TradeOffOut], Field(max_length=6)] = Field(default_factory=list)
-    runner_up_notes: Annotated[list[RunnerUpNote], Field(max_length=4)] = Field(
+    #: Must not be smaller than the number of runner-ups the node actually
+    #: sends. It was capped at 4 while the node grew to 5, so a correct model
+    #: response was rejected as "too_long" and the whole call was wasted.
+    runner_up_notes: Annotated[list[RunnerUpNote], Field(max_length=5)] = Field(
         default_factory=list
     )
 

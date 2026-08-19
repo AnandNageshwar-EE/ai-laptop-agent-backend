@@ -42,6 +42,7 @@ def health() -> HealthResponse:
         model=settings.traced_model_name,
         tracing_enabled=settings.tracing_enabled,
         prompt_cache_enabled=settings.prompt_caching_enabled,
+        provider_prompt_caching=settings.provider_prompt_caching_supported,
         prompt_prefix_fingerprint=get_prompt_provider().prefix_fingerprint(),
         marketplaces=[market.value for market in agent.registry.marketplaces],
         marketplace_source=settings.effective_marketplace_source,

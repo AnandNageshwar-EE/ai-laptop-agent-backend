@@ -76,16 +76,37 @@ class InvocationStats:
         }
 
 
-#: Strategies in order. The second is the retry.
+#: Default order: the provider's response-format constraint first, tool-calling
+#: as the retry.
 _STRATEGIES: tuple[str, ...] = ("json_schema", "function_calling")
+
+#: Order for OpenAI-compatible gateways such as OpenRouter.
+#:
+#: Measured, not assumed: routed through OpenRouter to an Anthropic model,
+#: ``response_format: json_schema`` is forwarded but not strictly enforced, so
+#: the model returns a shape of its own invention — observed failures were
+#: ``budget:extra_forbidden`` and ``trade_offs.0:model_type``. Tool-calling *is*
+#: enforced end to end, so it goes first and the wasted round trip disappears.
+_GATEWAY_STRATEGIES: tuple[str, ...] = ("function_calling", "json_schema")
+
+
+def strategies_for(provider: str) -> tuple[str, ...]:
+    return _GATEWAY_STRATEGIES if provider == "openrouter" else _STRATEGIES
 
 
 class StructuredLLM:
     """Invokes a chat model and returns a validated Pydantic model."""
 
-    def __init__(self, chat_model: Any, *, max_retries: int = 1) -> None:
+    def __init__(
+        self,
+        chat_model: Any,
+        *,
+        max_retries: int = 1,
+        strategies: tuple[str, ...] | None = None,
+    ) -> None:
         self._model = chat_model
         self._max_retries = max(0, max_retries)
+        self._strategies = strategies or _STRATEGIES
 
     def invoke(
         self,
@@ -98,7 +119,7 @@ class StructuredLLM:
         started = time.perf_counter()
         last_detail = "unknown"
 
-        strategies = _STRATEGIES[: 1 + self._max_retries]
+        strategies = self._strategies[: 1 + self._max_retries]
         for index, method in enumerate(strategies):
             stats.attempts += 1
             stats.methods_used.append(method)
@@ -184,14 +205,31 @@ class StructuredLLM:
         prefix has drifted.
         """
         usage = getattr(raw, "usage_metadata", None) or {}
-        if not isinstance(usage, dict):
-            return
-        stats.input_tokens = int(usage.get("input_tokens") or 0)
-        stats.output_tokens = int(usage.get("output_tokens") or 0)
-        details = usage.get("input_token_details") or {}
-        if isinstance(details, dict):
-            stats.cache_read_tokens = int(details.get("cache_read") or 0)
-            stats.cache_creation_tokens = int(details.get("cache_creation") or 0)
+        if isinstance(usage, dict) and usage:
+            stats.input_tokens = int(usage.get("input_tokens") or 0)
+            stats.output_tokens = int(usage.get("output_tokens") or 0)
+            details = usage.get("input_token_details") or {}
+            if isinstance(details, dict):
+                stats.cache_read_tokens = int(details.get("cache_read") or 0)
+                stats.cache_creation_tokens = int(details.get("cache_creation") or 0)
+
+        # OpenRouter is OpenAI-shaped and names these differently:
+        # prompt_tokens_details.cached_tokens rather than input_token_details.
+        # cache_read. Without this the cache would appear to never hit.
+        if stats.cache_read_tokens == 0:
+            metadata = getattr(raw, "response_metadata", None) or {}
+            raw_usage = metadata.get("token_usage") or metadata.get("usage") or {}
+            if isinstance(raw_usage, dict):
+                prompt_details = raw_usage.get("prompt_tokens_details") or {}
+                if isinstance(prompt_details, dict):
+                    stats.cache_read_tokens = int(prompt_details.get("cached_tokens") or 0)
+                stats.cache_creation_tokens = stats.cache_creation_tokens or int(
+                    raw_usage.get("cache_write_tokens") or 0
+                )
+                if not stats.input_tokens:
+                    stats.input_tokens = int(raw_usage.get("prompt_tokens") or 0)
+                if not stats.output_tokens:
+                    stats.output_tokens = int(raw_usage.get("completion_tokens") or 0)
 
 
 def _summarise(exc: ValidationError) -> str:
