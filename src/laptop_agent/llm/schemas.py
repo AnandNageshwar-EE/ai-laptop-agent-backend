@@ -145,6 +145,34 @@ class RecommendationExplanation(BaseModel):
 
     rationale: Annotated[str, Field(min_length=10, max_length=1200)]
     trade_offs: Annotated[list[TradeOffOut], Field(max_length=6)] = Field(default_factory=list)
+
+    @field_validator("trade_offs", mode="before")
+    @classmethod
+    def _accept_plain_strings(cls, value: object) -> object:
+        """Normalise a bare string trade-off into the structured form.
+
+        Observed in production against anthropic/claude-opus-5 via OpenRouter:
+        roughly one call in eight returned ``trade_offs`` as a list of sentences
+        rather than objects (``trade_offs.0:model_type``), which failed both
+        attempts and dropped the request to the deterministic explainer.
+
+        This is normalisation, not blind parsing: the string still goes through
+        the same length bounds as any other detail, and the monetary-claim screen
+        runs over it afterwards regardless. Rejecting a usable answer over a
+        container shape was the worse trade.
+        """
+        if not isinstance(value, list):
+            return value
+        normalised: list[object] = []
+        for item in value:
+            if isinstance(item, str):
+                text = item.strip()
+                if not text:
+                    continue
+                normalised.append({"dimension": "trade-off", "detail": text[:280]})
+            else:
+                normalised.append(item)
+        return normalised
     #: Must not be smaller than the number of runner-ups the node actually
     #: sends. It was capped at 4 while the node grew to 5, so a correct model
     #: response was rejected as "too_long" and the whole call was wasted.

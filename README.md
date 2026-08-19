@@ -264,6 +264,78 @@ docker compose up --build          # backend on :8000, frontend on :8501
 The `frontend` service expects the frontend repository checked out as a sibling
 directory. Comment it out to run the backend alone.
 
+## Testing the guardrails
+
+Three levels, deliberately independent.
+
+**1. Unit tests — each layer in isolation, offline**
+
+```bash
+.venv/bin/python -m pytest -q                                 # all 267
+.venv/bin/python -m pytest tests/test_input_guardrails.py -v   # 38 input cases
+.venv/bin/python -m pytest tests/test_price_validator.py -v     # 20 price rules
+.venv/bin/python -m pytest tests/test_recommendation_validator.py -v  # 15 tampering attacks
+.venv/bin/python -m pytest tests/test_repair_loop.py -v         # validator repair loop
+```
+
+| File | Tests | Covers |
+|---|---:|---|
+| `test_input_guardrails.py` | 38 | length, shape, injection, secret stripping |
+| `test_scope_guardrail.py` | 33 | disallowed topics, off-topic, terse answers |
+| `test_tool_guardrails.py` | 39 | argument bounds, no URL field, quarantine |
+| `test_serpapi_transport.py` | 34 | live-payload mapping, provider routing, hermeticity |
+| `test_graph_flow.py` | 21 | end-to-end, attacks never reach a marketplace |
+| `test_price_validator.py` | 20 | all eight price rules, order-independence |
+| `test_caching.py` | 19 | prompt-prefix stability, volatile TTL ceiling |
+| `test_recommendation_validator.py` | 15 | 15 tampering attacks |
+| `test_api.py` | 15 | 422 on malformed input, 500 leaks nothing |
+| `test_redaction_and_logging.py` | 14 | secrets masked, legitimate text untouched |
+| `test_marketplace_injection.py` | 11 | hostile listing flagged, disqualified, disclosed |
+| `test_repair_loop.py` | 8 | failed validation routes back, loop bounded |
+
+**2. Black-box probe against a running deployment**
+
+```bash
+.venv/bin/python -m uvicorn laptop_agent.api.main:app &
+.venv/bin/python scripts/probe_guardrails.py                 # all 37 cases
+.venv/bin/python scripts/probe_guardrails.py --skip-slow      # 29 attacks only
+```
+
+This talks only to the public API, so it exercises what an attacker actually
+reaches. It asserts more than "was it blocked":
+
+- the refusal text leaks no filter detail (`injection`, `pattern`, `regex`, …)
+- `llm_calls == 0` — no model call was spent on an attack
+- `products_returned == 0` — no marketplace was contacted
+- legitimate requests are **not** refused (false-positive checks)
+- a vague request asks a question, and never asks for payment or identity data
+- impossible constraints are declined rather than quietly relaxed
+
+`--skip-slow` runs only the attack cases. Those cost nothing even against a
+live-LLM deployment, because every one is refused before the graph reaches a
+model.
+
+**3. Read the audit trail**
+
+Every guardrail decision is a structured event on stdout:
+
+```bash
+.venv/bin/python -m uvicorn laptop_agent.api.main:app 2>&1 \
+  | grep -o '"audit_event": "[^"]*"' | sort | uniq -c
+```
+
+```
+  34x injection_detected      reason=system_manipulation
+  16x scope_rejected          reason=disallowed_topic     topic=malware
+   8x recommendation_approved
+   4x input_blocked           reason=empty_input
+   2x product_quarantined     reason=duplicate_product_id
+```
+
+Records carry a **category, never the matched span**, so attacker-controlled text
+never lands in a log or a trace. The Streamlit sidebar surfaces the same counters
+per turn.
+
 ## Tests
 
 ```bash

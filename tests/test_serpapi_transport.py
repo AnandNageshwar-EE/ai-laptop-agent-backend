@@ -461,3 +461,36 @@ def test_runner_up_note_cap_matches_what_the_node_sends():
     cap = next(m.max_length for m in notes if hasattr(m, "max_length"))
     sent = next(m.max_length for m in runners if hasattr(m, "max_length"))
     assert cap >= sent, f"schema caps notes at {cap} but up to {sent} runner-ups are sent"
+
+
+def test_bare_string_trade_offs_are_normalised_not_rejected():
+    """Models return trade_offs as sentences about one call in eight.
+
+    Rejecting a usable explanation over the container shape sent the request to
+    the deterministic explainer instead. Normalising keeps the bounds intact.
+    """
+    from laptop_agent.llm.schemas import RecommendationExplanation
+
+    parsed = RecommendationExplanation.model_validate(
+        {
+            "rationale": "This laptop fits the stated requirements well.",
+            "trade_offs": [
+                "Heavier than the alternatives at over 2kg.",
+                {"dimension": "battery life", "detail": "Shorter rated battery life."},
+                "",
+            ],
+        }
+    )
+    assert len(parsed.trade_offs) == 2
+    assert parsed.trade_offs[0].dimension == "trade-off"
+    assert "Heavier" in parsed.trade_offs[0].detail
+    assert parsed.trade_offs[1].dimension == "battery life"
+
+
+def test_normalised_trade_off_still_respects_length_bounds():
+    from laptop_agent.llm.schemas import RecommendationExplanation
+
+    parsed = RecommendationExplanation.model_validate(
+        {"rationale": "Valid rationale text here.", "trade_offs": ["x" * 5000]}
+    )
+    assert len(parsed.trade_offs[0].detail) <= 280
